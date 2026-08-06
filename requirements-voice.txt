@@ -1,14 +1,26 @@
-# Optional — nicer neural voices (still free & offline).
-#   pip install -r requirements-voice.txt
-# (macOS already has good built-in `say` voices, so this is only needed on
-#  Linux/Docker or if you want Piper/Kokoro specifically.)
-piper-tts>=1.2,<1.3        # small, fast neural TTS on CPU
-kokoro>=0.9               # Apache-2.0 high-quality TTS
+# ZenSuvidha OSS — the neural tier.  `make voice`  (pip install -r requirements-voice.txt)
+#
+# This is what the DEFAULT config.yaml expects. Both packages pull torch (~530MB),
+# which is why they are not in requirements.txt. Skip this file and the app still
+# runs: the OS voice speaks instead, and the speaker gate fails open.
+kokoro>=0.9                # Apache-2.0 TTS — the default tts.provider. In-process, so it
+                           # scales with the text (385ms) where macOS `say` costs ~1064ms
+                           # of fixed process spawn however short the sentence.
+speechbrain>=1.0           # ECAPA-TDNN speaker identity (config: stt.speaker_gate).
+                           # Here rather than in requirements.txt only because it shares
+                           # kokoro's torch dependency — it has nothing to do with voices.
 
-# --- indic_parler: AI4Bharat Indic-Parler-TTS (~21 Indian languages, free/offline) ---
-#   Only needed if you set tts.provider: indic_parler. Heavier (pulls torch).
-#   First run downloads the ~2GB model from Hugging Face; no api key.
-torch>=2.2                 # GPU/CPU tensor backend for Parler
-transformers>=4.46         # tokenizers + model loading
-sentencepiece>=0.2         # tokenizer for the Indic text encoder
-parler-tts @ git+https://github.com/huggingface/parler-tts.git  # the Indic-Parler model code
+# --- piper: an alternative TTS provider (tts.provider: piper) --------------------
+# NOT installed by default. piper-tts 1.2.x depends on `descript-audiotools`, which
+# builds from a git clone and currently FAILS — listing it here took this whole file
+# down with it, so `make voice` could not complete. If you want Piper, install it
+# separately and expect to resolve that build yourself:
+#   pip install 'piper-tts>=1.2,<1.3' && bash scripts/download_piper_voice.sh
+
+# --- indic_parler: AI4Bharat Indic-Parler-TTS (~21 Indian languages) -------------
+# NOT installed by default — a git dependency plus ~2GB of model on first run, and it
+# is only reachable if you set `tts.provider: indic_parler`. It is what actually speaks
+# Telugu/Tamil/Kannada/Malayalam, which Kokoro cannot say at all, so it belongs to the
+# GPU preset rather than the laptop one. To install:
+#   pip install 'torch>=2.2' 'transformers>=4.46' 'sentencepiece>=0.2' \
+#               'parler-tts @ git+https://github.com/huggingface/parler-tts.git'

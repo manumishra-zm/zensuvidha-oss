@@ -1,11 +1,19 @@
 PACK ?= clinic
 PY := .venv/bin/python
 
-.PHONY: install run web test voice docker clean
+.PHONY: setup install run web test voice docker clean
 
 install:            ## create venv + install core deps
 	python3 -m venv .venv && $(PY) -m pip install -q --upgrade pip && $(PY) -m pip install -q -r requirements.txt
-	@echo "Next:  ollama pull qwen2.5:3b"
+	@echo "Next:  ollama pull qwen3:4b   (qwen2.5 has no Telugu)"
+
+setup:              ## FULL install — everything the default config.yaml expects
+	$(MAKE) install
+	$(MAKE) voice
+	bash scripts/download_vad.sh
+	bash scripts/download_diarize.sh
+	@echo ""
+	@echo "Next:  ollama pull qwen3:4b   &&   make web"
 
 run:                ## text CLI  (make run PACK=restaurant)
 	$(PY) -m zensuvidha.cli --pack $(PACK)

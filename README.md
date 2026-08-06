@@ -53,33 +53,65 @@ Everything runs locally — the caller's data never leaves the machine (India-re
 
 ---
 
-## Quick start
+## Setup
+
+**Requirements:** Python **3.10–3.12** (faster-whisper / pyttsx3 wheels don't cover
+3.13–3.14 yet), [Ollama](https://ollama.com), ~4 GB of disk, and a microphone.
+No GPU, no API key, no telephony account.
 
 ### Option A — Docker (brings up Ollama too, one command)
+
 ```bash
+git clone https://github.com/manumishra-zm/zensuvidha-oss.git
 cd zensuvidha-oss
 docker compose up --build      # waits for Ollama, pulls the model, starts the app
-# open http://localhost:8000
 ```
+
+Open **http://localhost:8000**. Docker pins Python 3.11, so the voice stack always works.
 
 ### Option B — local
-```bash
-# 1. Ollama + a small model  (https://ollama.com)
-ollama pull qwen3:4b
 
-# 2. install & run
+```bash
+# 1 — get the code
+git clone https://github.com/manumishra-zm/zensuvidha-oss.git
 cd zensuvidha-oss
-make install                                   # venv + deps
-make web                                        # → http://localhost:8000
-#   or the text CLI:
-make run PACK=clinic
+
+# 2 — the language model  (~2.5 GB)
+ollama pull qwen3:4b            # NOT qwen2.5 — it has no Telugu (see Languages below)
+
+# 3 — everything else: venv, deps, and the model files
+make setup                      # ≈ 4 GB, a few minutes on a first run
+
+# 4 — run it
+make web                        # → http://localhost:8000
 ```
 
-> **Python note:** use **Python 3.10–3.12** for the voice stack (faster-whisper/pyttsx3
-> wheels don't yet cover 3.13/3.14). Text + streaming still work on newer Pythons; voice
-> degrades gracefully. Docker pins 3.11, so voice always works there.
+Then open **http://localhost:8000**, pick a business, and click **Start call**.
+Check `http://localhost:8000/health` if anything looks wrong — it reports which
+providers actually loaded.
 
-Health / status: `http://localhost:8000/health`
+Prefer the text CLI? `make run PACK=clinic` — no microphone needed.
+
+### What `make setup` does, and what you lose if you skip a part
+
+It is four steps you can also run individually. Each degrades *gracefully* — the app
+still answers calls without any of them — so it is worth knowing what each one buys.
+
+| Step | Gives you | Without it |
+|---|---|---|
+| `make install` | core: FastAPI, faster-whisper, sherpa-onnx, system TTS | nothing runs |
+| `make voice` | Kokoro (the default voice) + speaker identity — **pulls torch, ~530 MB** | the OS voice speaks instead (~1 s slower per sentence), and the speaker gate fails open: **every** voice is answered |
+| `bash scripts/download_vad.sh` | Silero VAD in the browser (~13 MB) | turn-taking falls back to an energy threshold — noticeably worse in a noisy room |
+| `bash scripts/download_diarize.sh` | voice isolation models (~45 MB) | a colleague or a TV talking in a gap lands in the transcript |
+
+Two optional extras, both off by default:
+
+```bash
+bash scripts/download_deepfilter.sh   # DeepFilterNet, for the A/B toggle in the UI
+bash scripts/download_piper_voice.sh  # a Piper voice, if you prefer it to Kokoro
+```
+
+Running it on a phone needs HTTPS — see [On your phone](#on-your-phone-same-wi-fi).
 
 ---
 
@@ -288,14 +320,27 @@ changing what is said).
 | Server | `streaming: true`, timings on | — |
 | Guard | all checks on | `log_only: true` to observe; per-check flags to relax |
 
-### Better voices (optional, still free)
-```bash
-make voice                               # installs piper-tts + kokoro
-bash scripts/download_piper_voice.sh     # downloads a Piper voice into models/
-# then set  tts.provider: piper  in config.yaml
-```
-On macOS the built-in `say` voices (incl. Indian: Aman, Rishi, Tara, Lekha) are used directly and
-listed in the UI's Voice picker.
+### Voices
+
+`make voice` installs **Kokoro**, which is the default and the one to use: it runs
+in-process and scales with the text (385 ms), where the OS voice costs ~1064 ms of
+fixed process spawn however short the sentence.
+
+TTS is routed by **script, not preference** — Kokoro speaks Latin and Devanagari, and
+anything else falls through to the OS voice. On macOS the built-in Indian voices
+(Aman, Rishi, Tara, Lekha) are used directly and listed in the UI's Voice picker.
+Malayalam, Gujarati, Punjabi, Odia and Urdu have no macOS voice at all; the app warns
+about this at startup and the UI says why the reply is silent.
+
+Two alternatives, neither installed by default:
+
+- **Piper** — `pip install 'piper-tts>=1.2,<1.3' && bash scripts/download_piper_voice.sh`,
+  then `tts.provider: piper`. Kept out of `make voice` because its `descript-audiotools`
+  dependency currently fails to build and took the whole install down with it.
+- **Indic-Parler** — the only one here that actually speaks Telugu, Tamil, Kannada and
+  Malayalam. A git dependency plus ~2 GB on first run, and slow enough on CPU that it
+  belongs to the [GPU preset](#languages-qwen3-4b). Install line is in
+  `requirements-voice.txt`.
 
 ---
 

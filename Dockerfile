@@ -3,7 +3,7 @@ FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     OLLAMA_URL=http://ollama:11434 \
-    ZS_LLM_MODEL=qwen2.5:3b
+    ZS_LLM_MODEL=qwen3:4b
 
 # espeak-ng → pyttsx3 voices; libsndfile1 → soundfile; curl → healthcheck/entrypoint.
 # (faster-whisper bundles ffmpeg via PyAV wheels, so no system ffmpeg needed.)
