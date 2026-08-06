@@ -1,0 +1,192 @@
+# ZenSuvidha OSS configuration — every provider here is free & self-hosted.
+# Swap providers/models freely; the engine is provider-agnostic.
+
+stt:
+  provider: faster_whisper   # faster_whisper | none
+  model: small               # tiny | base | small  (small ≈ 460MB, best CPU accuracy)
+  language: null             # null = auto-detect the spoken language (multilingual). denoise+VAD guard the noise mis-fire; force "en"/"hi" to pin.
+  compute_type: int8         # int8 (CPU) | float16 (GPU)
+  beam_size: 3               # beam search width (5=most accurate/slow, 1=greedy/fastest). 3 = balanced.
+  fast_beam_size: 1          # beam used in "fast" mode (greedy = lowest latency)
+  device: cpu                # cpu | cuda (GPU) — see config.gpu.yaml
+  vad_filter: true           # strip silence before STT → prevents "5,5,5…" hallucinations
+  denoise: false             # OFF, and MEASURED: noisereduce changes the word-error rate by
+                             #   0.00 across clean / white / fan-rumble / babble, down to 0dB SNR
+                             #   (noise as loud as the speech). Whisper was trained on 680k hours
+                             #   of messy audio and is already robust; spectral gating in front of
+                             #   it removes speech detail without adding information. Leave it off
+                             #   — the real noise rejection is Silero (browser) + vad_filter below.
+  # ---- DeepFilterNet: live A/B toggle in the UI (default OFF) ----
+  # MEASURED on this codebase and it does NOT help: Whisper WER 0.10 vs 0.00 raw,
+  # speaker similarity 0.596 vs 0.675, and it won 0 of 10 conditions in an SNR sweep
+  # from +20dB down to -5dB. Wired in anyway so the trade-off can be heard, not argued.
+  # Set the backend, run `bash scripts/download_deepfilter.sh`, then use the
+  # "DeepFilter" button in the UI to switch it per call.
+  denoise_backend: deepfilternet   # deepfilternet | none  (the UI toggle needs this set)
+  auto_denoise: false        # MEASURED OFF. Swept 6 interference types x 5 SNRs: DeepFilter
+                             #   won 1 cell, lost 8, tied 21 (net -400% word recall) — and it
+                             #   is the most expensive stage at 226-475ms. It costs time AND
+                             #   accuracy on the recognition path. The UI toggle still forces
+                             #   it on to hear the difference; set this true to let the room's
+                             #   noise floor decide again.
+  deepfilter_bin: models/deep-filter   # from scripts/download_deepfilter.sh
+  deepfilter_atten_db: null  # how far it may suppress. null/100 = unlimited (tool default),
+                             #   0 = no suppression. MEASURED: a CLEAN voice is safe even at
+                             #   the default — 98% of energy kept down to a whisper (-26dB),
+                             #   WER 0.00, voiceprint 0.99. What it DOES eat is speech mixed
+                             #   INTO heavy noise (WER 0.15 -> 0.38 at -5dB SNR). Set 10-20
+                             #   to bound how much of the caller can ever be removed.
+  # Junk/phantom rejection — tuned so REAL Indian-language speech (lower Whisper confidence)
+  # is never dropped; only clear non-speech / garbage is. Loosen further if it ever drops you.
+  reject_no_speech: 0.85     # drop only if Whisper is quite sure the clip is NOT speech
+  reject_logprob: -1.6       # drop only very-low-confidence (garbage) decodes
+  # ---- speaker gate: answer only the person who called ----
+  # Silero knows a sound is SPEECH; it cannot tell you WHOSE. Without this a colleague
+  # across the room, or a television, opens a turn and gets answered as if they were the
+  # caller. The first voice on the call is enrolled, and later utterances are compared
+  # against it as an ECAPA voiceprint (cosine similarity).
+  speaker_gate: true        # true = ignore voices other than the caller's
+  speaker_backend: speechbrain   # speechbrain (ECAPA, ~80MB, best) | resemblyzer (~17MB)
+  speaker_threshold: 0.55    # cosine similarity to accept. Lower = more permissive.
+                             #   0.25 = same voice down a bad line; 0.55 = comfortable
+                             #   margin; above ~0.7 starts rejecting the real caller when
+                             #   they change tone or move away from the mic.
+  speaker_model: speechbrain/spkrec-ecapa-voxceleb   # Apache-2.0, NOT a gated repo
+  # ---- segment-level gating: keep the caller, drop whoever else spoke in the gaps ----
+  # The whole-utterance gate above judges ONE verdict for the whole clip, which breaks on
+  # the commonest real interference. MEASURED: a colleague speaking in a GAP drags
+  # similarity 0.867 -> 0.34 and the caller's OWN turn is rejected, with the stranger's
+  # words left in the transcript. With diarization on, the turn is split by speaker and
+  # only the caller's parts reach Whisper: 0.364 REJ -> 0.872 ACCEPT, transcript 7.7s ->
+  # 3.6s with the intruder removed. Impostor-only clips are still rejected.
+  # (True simultaneous overlap does NOT need this — measured, the gate already copes.)
+  # Needs speaker_gate: true, and: bash scripts/download_diarize.sh   (~45MB, ONNX)
+  diarize: true
+  diarize_segmentation: models/diarize/segmentation.onnx   # pyannote-segmentation-3.0, MIT
+  diarize_embedding: models/diarize/embedding.onnx         # 3D-Speaker ERes2Net, Apache-2.0
+  diarize_max_speakers: 3
+  # The UI "Fast STT" toggle flips beam_size→fast_beam_size per call for lower latency.
+
+llm:
+  provider: ollama
+  model: qwen3:4b            # DEFAULT = best MULTILINGUAL quality (proper Hindi/Telugu/Kannada).
+                            #   qwen2.5:3b is faster but produces GARBLED Indian-language replies —
+                            #   only use it for English-only deployments. `ollama pull qwen3:4b`.
+                            #   On a GPU, qwen2.5:14B / qwen2.5:7B are better still (see config.gpu.yaml).
+  think: false              # Qwen3 THINKING MODE OFF — its chain-of-thought adds seconds of dead
+                            #   air on a call. Keep false for voice. (null = auto-off for qwen3.)
+  base_url: http://localhost:11434
+  temperature: 0.3           # lower = more faithful to the facts, less drift (esp. multilingual)
+  keep_alive: "30m"          # keep the model resident in RAM between calls (latency)
+  timeout: 120               # seconds
+  retries: 2                 # transient-error retries with backoff
+  num_predict: 200           # cap reply length. Enough for say + action.slots JSON without
+                             #   truncating (truncation = empty/garbled replies); still terse.
+  num_ctx: 12288             # room for the system prompt (~4k tokens on the clinic pack),
+                             #   the caller's-language facts (~1k in Telugu) and the
+                             #   conversation. At 6144 the prompt OVERFLOWED and Ollama
+                             #   silently dropped the oldest messages — the agent lost its
+                             #   own instructions mid-call and started looping.
+                             #   Keep this CONSTANT: changing num_ctx between calls makes
+                             #   Ollama reallocate its KV cache and reload the model
+                             #   (every reply went from ~3s to ~16s).
+  fast_model: null           # optional: route trivial turns (greetings, yes/no) to a
+                             #   smaller/faster model, e.g. "qwen2.5:1.5b". null = disabled
+                             #   (always use `model`). Only used when the caller hasn't
+                             #   pinned a model in the UI. `ollama pull qwen2.5:1.5b` first.
+
+tts:
+  provider: kokoro           # system (pyttsx3) | piper | kokoro | indic_parler | clone | none
+  # WHY kokoro and not system: macOS `say` is ~1064ms of FIXED per-call overhead plus
+  # 0.4ms/char — a three-word opener costs as much as a paragraph, and time-to-first-
+  # audio is dominated by it. Measured on the same machine, same sentences:
+  #     macOS say   English 1065ms   Hindi ~880ms   Telugu/Tamil skipped
+  #     kokoro      English  385ms   Hindi  583ms   Telugu/Tamil declined -> fallback
+  # Kokoro runs in-process, so it scales with the text instead of paying a subprocess
+  # and a temp file every time. Set `provider: system` to go back.
+  fallback: system           # who speaks the scripts kokoro can't (none = stay silent)
+  cache: true                # LRU-cache audio (greetings/confirmations become instant)
+  cache_size: 256
+  rate: 175                  # words/min for pyttsx3
+  voice: null                # optional OS voice id
+  piper_model: en_US-amy-medium
+  piper_model_path: null     # explicit path to a .onnx voice (scripts/download_piper_voice.sh)
+  kokoro_voice: af_heart
+  kokoro_lang: a             # a=en-US, h=hindi
+  # --- indic_parler: AI4Bharat Indic-Parler-TTS — free, offline, ~21 Indian languages ---
+  #   Set provider: indic_parler to SPEAK Hindi/Tamil/Telugu/Bengali/Marathi/etc.
+  #   Language is auto-detected from the text; voice/style is set by the description below.
+  #   First run downloads ~2GB from Hugging Face. Needs: pip install -r requirements-voice.txt
+  device: null               # null = cuda→cpu auto. Set "mps" to try Apple GPU (may be flaky).
+  indic_description: "A female speaker with a clear, warm, natural voice speaks at a moderate pace with expressive intonation. The recording is very high quality with no background noise."
+
+# Grounding guard — checks the model instead of trusting it (see zensuvidha/guard.py).
+# A small model asked for a service you don't offer WILL invent a price, and it drifts
+# worst in Hindi/Telugu/Tamil. Nothing is spoken until it has passed these checks.
+guard:
+  enabled: true
+  check_numbers: true        # every ₹ fee / phone / timing in a reply must appear in the
+                             #   pack's facts or in something the caller said. This is the
+                             #   one that stops "neurologist ka fee ₹1,000 hai".
+  check_repetition: true     # catch a reply that collapsed into repeating one clause —
+                             #   how a small model fails in Telugu/Tamil when it runs dry
+  check_script: true         # the reply must be in the language the caller is speaking —
+                             #   catches a Telugu call answered in English or half-Hindi.
+  min_script_share: 0.25     # target-script letters needed to count as "in that language".
+                             #   Low on purpose: Latin proper nouns (Dr Rao, UPI, HDFC)
+                             #   inside a native-script sentence are normal.
+  trim_truncated: true       # cut a reply that ran out of tokens back to its last whole
+                             #   sentence instead of speaking a fragment
+  log_only: false            # true = log what WOULD be blocked but still speak it (tuning)
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  streaming: true            # stream LLM → speak sentence-by-sentence (low latency)
+  log_timings: true          # log STT/LLM/TTS timing per turn
+  # ---- logging ----
+  log_level: INFO            # DEBUG | INFO | WARNING | ERROR
+  log_file: null             # e.g. logs/zensuvidha.log → rotating file (5MB × 5). null = console only
+  log_json: false            # true = structured JSON logs (Loki/Datadog/CloudWatch)
+  # admin_token: null       # required for /transcripts and /bookings from OFF-loopback
+                             #   clients. Those return caller names, phone numbers and full
+                             #   call text. Localhost is always allowed; remote without a
+                             #   token is refused.
+  log_transcripts: true      # persist each turn (caller text, reply, language, latency) to SQLite
+                             #   → GET /transcripts?call_id=… (contains caller PII; disable if not needed)
+  synth_workers: 3           # max sentences synthesised in parallel per turn (sent in order)
+  pcm_streaming: true        # ship TTS audio frame-by-frame for providers that can render
+                             #   progressively (kokoro). SELF-GATING: a provider without
+                             #   .synth_stream (macOS `say`, piper, xtts) keeps the
+                             #   whole-clip path, so this can never make them slower.
+  stream_queue: 24           # frames buffered per sentence before the renderer waits on
+                             #   the socket (backpressure — bounds memory on a slow link)
+  speculative_stt: true      # transcribe an utterance at ~450ms of silence WHILE the
+                             #   caller may still be pausing, and hold the result. If they
+                             #   resume, it's discarded; if they were done, the turn starts
+                             #   with zero STT on the clock. Partials NEVER reach the LLM —
+                             #   the guard must ground numbers against complete words.
+  filler: null               # optional phrase spoken instantly after STT to mask LLM think
+                             #   time, e.g. "One moment.". null = off (best for multilingual).
+  # A caller who goes quiet. A real receptionist asks once and then lets the line go;
+  # without this the call sits open forever holding a session slot and the caller gets
+  # no cue that anyone is still there. 0 disables either step.
+  idle_prompt_seconds: 30    # ...ask "are you still there?" (only counts silence AFTER
+                             #   the agent has finished — a turn in flight is not idle)
+  idle_hangup_seconds: 75    # ...then say goodbye and close the call. Generous on
+                             #   purpose: a caller looking up a phone number or talking
+                             #   to somebody beside them must not be cut off.
+  slow_filler_seconds: 2.0   # if a reply takes longer than this, speak a language-matched
+                             #   "let me check…" filler so the caller never hears dead air. 0=off.
+  max_sessions: 6            # MEASURED on this CPU (M1 Pro, qwen3:4b via Ollama/Metal):
+                             #   concurrent   first audio   total turn
+                             #        1           2.0s         4.3s
+                             #        6           2.0s         9.6s
+                             #   Streaming holds first-audio flat, but generation
+                             #   serialises — at 24 a turn would take 30-40s. Raise this
+                             #   to 24 with config.gpu.yaml, where the LLM is not the
+                             #   bottleneck.
+  allow_clone: true          # enable /voice/clone (set false in public prod)
+  max_upload_bytes: 6000000  # reject clone uploads larger than this (~6 MB)
+
+default_pack: clinic

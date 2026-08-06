@@ -1,0 +1,14 @@
+# Optional — nicer neural voices (still free & offline).
+#   pip install -r requirements-voice.txt
+# (macOS already has good built-in `say` voices, so this is only needed on
+#  Linux/Docker or if you want Piper/Kokoro specifically.)
+piper-tts>=1.2,<1.3        # small, fast neural TTS on CPU
+kokoro>=0.9               # Apache-2.0 high-quality TTS
+
+# --- indic_parler: AI4Bharat Indic-Parler-TTS (~21 Indian languages, free/offline) ---
+#   Only needed if you set tts.provider: indic_parler. Heavier (pulls torch).
+#   First run downloads the ~2GB model from Hugging Face; no api key.
+torch>=2.2                 # GPU/CPU tensor backend for Parler
+transformers>=4.46         # tokenizers + model loading
+sentencepiece>=0.2         # tokenizer for the Indic text encoder
+parler-tts @ git+https://github.com/huggingface/parler-tts.git  # the Indic-Parler model code

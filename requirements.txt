@@ -1,0 +1,17 @@
+# ZenSuvidha OSS — core (100% free, runs on CPU / any laptop)
+# Pinned to tested versions for reproducible builds. Bump deliberately.
+fastapi==0.139.2
+uvicorn[standard]==0.51.0   # includes websockets support for the /ws voice loop
+httpx==0.28.1
+pyyaml==6.0.3
+faster-whisper==1.2.1       # STT (CPU, int8) — pulls ctranslate2 + PyAV (bundled ffmpeg)
+ctranslate2==4.8.1          # pin transitively so a breaking release can't sneak in
+pyttsx3==2.99               # offline OS text-to-speech (default TTS; macOS uses `say`)
+soundfile==0.14.0           # normalises TTS output to 16-bit WAV
+numpy==2.4.6
+noisereduce==3.0.3          # optional background-noise removal before STT (config: stt.denoise)
+# --- optional: ignore voices other than the caller (config: stt.speaker_gate) ---
+# speechbrain>=1.0        # ECAPA-TDNN speaker embedding, Apache-2.0, ~80MB model
+# resemblyzer             # lighter alternative (~17MB), MIT
+# --- optional: segment-level speaker gating (config: stt.diarize) ---
+# sherpa-onnx           # ONNX diarization, no torch/GPU; models via scripts/download_diarize.sh

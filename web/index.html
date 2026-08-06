@@ -1,0 +1,1893 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZenSuvidha · Voice</title>
+<script>/* set theme before paint → no flash */(function(){try{var t=localStorage.getItem('zs-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
+<style>
+  /* system UI font — renders as SF Pro on macOS */
+  /* Brand = black & white. The AI orb is the only colour. */
+  :root{
+    --bg:#eef0f4; --card:#ffffff; --line:#e6e8ec; --line2:#eef0f3;
+    --ink:#14161a; --muted:#6b7280; --faint:#9aa2ad;
+    --input:#ffffff; --input-2:#f5f6f8; --chip:#f1f2f5; --chip-on:#ffffff;
+    --badge:#f4f6f8; --track:#e3e6ef; --pill:#c9cdd6; --scroll:#e3e6ec;
+    --primary:#14161a; --primary-fg:#ffffff;
+    --user-bg:#14161a; --user-fg:#ffffff; --bot-bg:#f5f6f8; --bot-fg:#1f2430;
+    --stage-bg:#ffffff; --stage-glow:#eef0f6; --overlay:rgba(236,238,242,.86); --glass:rgba(255,255,255,.85);
+    --green:#3fae74; --blue:#4f8bf0; --purple:#8b7cf6; --amber:#b6802a;
+    --shadow:0 1px 2px rgba(16,23,32,.04), 0 10px 34px rgba(16,23,32,.07);
+  }
+  :root[data-theme="dark"]{
+    --bg:#08090c; --card:#141519; --line:#262a31; --line2:#1d2027;
+    --ink:#e9ebf0; --muted:#9aa1ac; --faint:#6b7078;
+    --input:#0f1115; --input-2:#191c22; --chip:#15181e; --chip-on:#252a33;
+    --badge:#15181e; --track:#242830; --pill:#3a3f48; --scroll:#2a2e36;
+    --primary:#f2f3f6; --primary-fg:#111318;
+    --user-bg:#f2f3f6; --user-fg:#111318; --bot-bg:#1a1d24; --bot-fg:#dbe0e8;
+    --stage-bg:#0a0b0f; --stage-glow:#161a24; --overlay:rgba(6,7,10,.84); --glass:rgba(20,22,28,.85);
+    --amber:#e0a44a;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 12px 34px rgba(0,0,0,.45);
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:14px;-webkit-font-smoothing:antialiased;letter-spacing:-0.01em;overflow:hidden;}
+
+  /* ---------- three-column shell ---------- */
+  .app{height:100vh;padding:12px;display:grid;grid-template-columns:288px minmax(360px,1.15fr) minmax(340px,1fr);gap:12px;align-items:stretch;}
+  .app.no-orb{grid-template-columns:288px 1fr;}
+  .app.no-orb #stage{display:none;}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);height:calc(100vh - 24px);overflow:hidden;}
+
+  /* ---------- left sidebar ---------- */
+  .side{padding:16px;display:flex;flex-direction:column;gap:12px;overflow-y:auto;}
+  .side::-webkit-scrollbar{width:8px;} .side::-webkit-scrollbar-thumb{background:var(--scroll);border-radius:8px;}
+  .theme-btn{margin-left:auto;width:32px;height:32px;border-radius:9px;border:1px solid var(--line);background:var(--input);color:var(--ink);font-size:14px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.15s;flex:none;}
+  .theme-btn:hover{background:var(--input-2);}
+  .theme-btn svg{width:16px;height:16px;}
+  .brand{display:flex;align-items:center;gap:10px;}
+  .logo{width:52px;height:52px;border-radius:13px;background:var(--input-2);border:1px solid var(--line);image-rendering:pixelated;image-rendering:crisp-edges;flex:none;}
+  .brand h1{font-size:14.5px;margin:1px 0;font-weight:600;}
+  .brand p{font-size:11px;color:var(--muted);margin:0;}
+  .badge{display:inline-flex;align-items:center;gap:6px;background:var(--badge);border:1px solid var(--line);border-radius:20px;padding:4px 9px;font-size:11px;color:var(--muted);white-space:nowrap;align-self:flex-start;}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--faint);}
+  .dot.on{background:var(--green);box-shadow:0 0 0 3px rgba(63,174,116,.15);}
+  .sec{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);font-weight:700;margin:4px 0 -2px;}
+
+  .fields{display:grid;grid-template-columns:1fr 1fr;gap:9px;}
+  .field label{display:block;font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--faint);margin-bottom:4px;font-weight:600;}
+  .field select,.field .ro{width:100%;padding:7px 10px;border:1px solid var(--line);border-radius:9px;background:var(--input);font-family:inherit;font-size:13px;color:var(--ink);}
+  select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%236b7280' stroke-width='1.4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 11px center;padding-right:28px;cursor:pointer;}
+
+  .actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
+  .btn{border:1px solid var(--line);background:var(--input);color:var(--ink);border-radius:9px;padding:7px 12px;font-family:inherit;font-size:13px;font-weight:500;cursor:pointer;transition:.15s;}
+  .btn:hover{background:var(--input-2);}
+  .btn.primary{background:var(--primary);color:var(--primary-fg);border-color:var(--primary);}
+  .btn.primary:hover{filter:brightness(1.12);}
+  .btn.danger{color:var(--amber);}
+  .btn:disabled{opacity:.45;cursor:not-allowed;}
+  .state{margin-left:auto;font-size:12px;color:var(--muted);font-weight:500;}
+  .modes{display:inline-flex;background:var(--chip);border:1px solid var(--line);border-radius:10px;padding:2px;gap:2px;flex-wrap:wrap;}
+  .mode{border:none;background:transparent;color:var(--muted);font-family:inherit;font-size:12px;font-weight:500;padding:5px 11px;border-radius:7px;cursor:pointer;}
+  .mode.on{background:var(--chip-on);color:var(--ink);box-shadow:0 1px 2px rgba(16,23,32,.1);}
+  #sttFastBtn.on{background:var(--primary);color:var(--primary-fg);}
+  #dfBtn.on,#isoBtn.on{background:var(--primary);color:var(--primary-fg);}
+  #dfBtn.auto,#isoBtn.auto{border-color:var(--primary);color:var(--primary);}
+  #isoBtn.on{background:var(--primary);color:var(--primary-fg);}
+  #isoBtn[disabled]{opacity:.4;cursor:not-allowed;}
+  #inspector{position:relative;width:min(100%,460px);margin:14px auto 0;background:var(--card);
+    border:1px solid var(--line);border-radius:12px;padding:11px 12px 9px;text-align:left;}
+  .insp-head{display:flex;align-items:center;justify-content:space-between;gap:10px;
+    margin-bottom:7px;padding-right:32px;}   /* room for the enlarge button */
+  .insp-head .eyebrow{flex:none;}
+  #inspMods{font-size:10.5px;color:var(--muted);font-family:ui-monospace,Menlo,monospace;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;text-align:right;}
+  #spec{width:100%;height:76px;display:block;border-radius:7px;background:#05070c;}
+  .spec-axis{display:flex;justify-content:space-between;font-size:8.5px;color:var(--faint);
+    font-family:ui-monospace,Menlo,monospace;margin:2px 1px 8px;}
+  #inspRows{display:flex;flex-direction:column;gap:7px;max-height:190px;overflow-y:auto;}
+  /* Before the first turn there is nothing to list, and a blank half-panel looks like a
+     bug rather than an empty state. Say what it is waiting for. */
+  #inspRows:empty::after{content:attr(data-empty);display:block;padding:18px 2px;
+    text-align:center;font-size:11.5px;color:var(--faint);line-height:1.5;}
+  #inspRows::-webkit-scrollbar{width:8px;}
+  #inspRows::-webkit-scrollbar-thumb{background:var(--scroll);border-radius:8px;}
+  .insp-row{border-top:1px solid var(--line2);padding-top:7px;font-size:11.5px;}
+  .insp-row:first-child{border-top:0;padding-top:0;}
+  .insp-top{display:flex;align-items:center;gap:7px;margin-bottom:4px;flex-wrap:wrap;}
+  .insp-tag{font-family:ui-monospace,Menlo,monospace;font-size:9.5px;letter-spacing:.03em;
+    padding:1.5px 5px;border-radius:4px;white-space:nowrap;}
+  .t-keep{background:rgba(12,163,12,.16);color:#0f8a2c;}
+  .t-drop{background:rgba(208,59,59,.16);color:#c0392b;}
+  .t-info{background:var(--line2);color:var(--muted);}
+  .insp-bar{display:flex;height:7px;border-radius:4px;overflow:hidden;background:var(--line2);gap:1px;}
+  .insp-bar i{display:block;height:100%;}
+  .b-keep{background:#0ca30c;} .b-drop{background:#d03b3b;}
+  .insp-txt{color:var(--muted);margin-top:4px;line-height:1.35;}
+  @media (prefers-color-scheme:dark){ .t-keep{color:#5cd75c;} .t-drop{color:#ea7a7a;} }
+  #dfBtn[disabled]{opacity:.4;cursor:not-allowed;}
+  .toggle{display:flex;align-items:center;justify-content:space-between;gap:8px;border:1px solid var(--line);border-radius:10px;padding:8px 11px;font-size:12.5px;font-weight:500;cursor:pointer;background:var(--input);color:var(--ink);}
+  .toggle .pill{width:34px;height:19px;border-radius:20px;background:var(--pill);position:relative;transition:.18s;flex:none;}
+  .toggle .pill::after{content:'';position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2);transition:.18s;}
+  .toggle.on .pill{background:var(--primary);} .toggle.on .pill::after{left:17px;}
+  .brand-voice{margin-top:2px;padding-top:12px;border-top:1px solid var(--line2);}
+  .bv-title{font-size:11.5px;font-weight:600;color:var(--ink);margin-bottom:7px;}
+  .bv-title span{color:var(--faint);font-weight:400;}
+  .bv-hint{display:block;font-size:11px;color:var(--faint);margin-top:7px;line-height:1.35;}
+  #recVoice.rec{background:var(--amber);color:#fff;border-color:var(--amber);}
+
+  /* ---------- centre stage (AI orb — NO box, floats on a soft glow) ---------- */
+  #stage{position:relative;height:calc(100vh - 24px);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;overflow:hidden;
+    background:radial-gradient(circle at 50% 42%, var(--stage-glow) 0%, transparent 62%), var(--stage-bg);
+    border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);}
+  .orbwrap{position:relative;width:min(44vmin,300px);height:min(44vmin,300px);flex:none;}
+
+  /* ---------- two-pane stage ----------------------------------------------------
+     Only applied while the inspector is visible. `grid-template-rows` is the single
+     thing that moves: even → half and half, orb/insp → that pane takes the room and
+     the other keeps just enough to stay useful. `min-height:0` on both rows is what
+     lets the inner scroll areas actually scroll instead of pushing the grid taller
+     than the stage. */
+  #stage.split{display:grid;grid-template-rows:1fr 1fr;gap:10px;padding:12px;
+    justify-content:stretch;align-content:stretch;}
+  #stage.split[data-grow="orb"]{grid-template-rows:1fr minmax(112px,26%);}
+  #stage.split[data-grow="insp"]{grid-template-rows:minmax(120px,26%) 1fr;}
+  /* A grid item stretches to its row, but its CONTENT can still push it past —
+     measured: a 420px row holding a 484px pane, overflowing 7px ABOVE the stage and
+     carrying the pane's own button off-screen with it. `height:100%` pins the box to
+     the row and `min-height:0` lets the flex column inside actually shrink. */
+  #stage.split>.pane,#stage.split>#inspector{min-height:0;height:100%;overflow:hidden;}
+  #stage.split .pane-body{height:100%;min-height:0;justify-content:center;}
+  #stage.split #inspector{width:100%;max-width:none;margin:0;display:flex;
+    flex-direction:column;}
+  /* The rows list is the only part that should absorb the extra height. */
+  #stage.split #inspRows{flex:1 1 auto;max-height:none;}
+  /* Growing the inspector makes the spectrogram worth looking at; shrinking it keeps
+     the trace readable rather than squashing it to a line. */
+  #stage.split[data-grow="insp"] #spec{height:clamp(76px,26vh,240px);}
+  #stage.split[data-grow="orb"] #spec{height:56px;}
+
+  .pane{position:relative;display:flex;align-items:center;justify-content:center;min-height:0;}
+  .pane-body{display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:14px;min-height:0;max-height:100%;}
+  /* In a split the orb must size off ITS PANE, not the viewport, or it overflows the
+     row and pushes the inspector off the stage. */
+  /* flex-basis 0 (not auto) — with `auto` the orb keeps its 300px intrinsic size and
+     refuses to give the row back, which is exactly how the pane overflowed. */
+  #stage.split .orbwrap{width:auto;height:auto;flex:1 1 0;min-height:0;min-width:0;
+    aspect-ratio:1;max-width:100%;margin:0 auto;}
+  #stage.split[data-grow="insp"] .pane-body{gap:6px;}
+  #stage.split[data-grow="insp"] .hint,
+  #stage.split[data-grow="insp"] .wave{display:none;}
+
+  .pane-btn{position:absolute;top:2px;right:2px;z-index:3;width:26px;height:26px;
+    border-radius:8px;border:1px solid var(--line);background:var(--card);
+    color:var(--muted);font-size:12px;line-height:1;cursor:pointer;display:none;
+    align-items:center;justify-content:center;transition:.15s;}
+  .pane-btn:hover{background:var(--input-2);color:var(--ink);}
+  .pane-btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px;}
+  #stage.split .pane-btn{display:flex;}
+  #stage.split #orbGrow{top:10px;right:44px;}      /* clear of the full-screen button */
+  #stage.split[data-grow="orb"] #orbGrow,
+  #stage.split[data-grow="insp"] #inspGrow{border-color:var(--primary);color:var(--primary);}
+  #viz{width:100%;height:100%;display:block;}
+  .orb-label{font-size:11px;letter-spacing:.22em;font-weight:700;color:var(--muted);}
+
+  /* live audio: waveform + exact level + transcription */
+  .wave{width:min(66%,300px);height:44px;display:block;}
+  .caption{min-height:19px;max-width:80%;text-align:center;font-size:13.5px;line-height:1.45;color:var(--ink);font-weight:500;}
+  .caption[hidden]{display:none;}
+  .caption .who{font-size:9px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;margin-right:7px;vertical-align:1px;}
+  .caption.you .who{color:var(--muted);} .caption.ai .who{color:var(--ink);}
+  .hint{text-align:center;color:var(--faint);font-size:11.5px;line-height:1.4;max-width:64%;}
+  .expand-btn{position:absolute;top:12px;right:12px;width:34px;height:34px;border-radius:9px;border:1px solid var(--line);background:var(--glass);color:var(--muted);font-size:15px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.15s;z-index:2;}
+  .expand-btn:hover{color:var(--ink);background:var(--card);}
+
+  /* fullscreen voice overlay */
+  .voice-fs{position:fixed;inset:0;z-index:60;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;background:var(--overlay);backdrop-filter:blur(18px) saturate(1.1);-webkit-backdrop-filter:blur(18px) saturate(1.1);animation:fsIn .22s ease;}
+  .voice-fs[hidden]{display:none;}
+  @keyframes fsIn{from{opacity:0;} to{opacity:1;}}
+  .fs-orb{position:relative;width:min(64vmin,600px);aspect-ratio:1;}
+  .fs-orb canvas{width:100%;height:100%;display:block;}
+  .fs-lbl{font-size:14px;letter-spacing:.24em;color:var(--muted);font-weight:700;}
+  .fs-min{position:absolute;top:22px;right:24px;border:1px solid var(--line);background:var(--glass);border-radius:11px;padding:10px 16px;font-family:inherit;font-size:14px;font-weight:500;color:var(--ink);cursor:pointer;}
+  .fs-min:hover{background:var(--card);}
+  .fs-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;justify-content:center;}
+  .fs-hint{color:var(--muted);font-size:13.5px;}
+
+  /* ---------- right conversation ---------- */
+  .convo{display:flex;flex-direction:column;}
+  .convo .eyebrow{padding:15px 22px 6px;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);font-weight:700;display:flex;align-items:center;gap:8px;}
+  #chat{flex:1;overflow-y:auto;padding:6px 22px 12px;display:flex;flex-direction:column;gap:11px;}
+  .row{display:flex;flex-direction:column;max-width:84%;}
+  .row.user{align-self:flex-end;align-items:flex-end;}
+  .row.bot{align-self:flex-start;align-items:flex-start;}
+  .tag{font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);font-weight:600;margin:0 4px 6px;}
+  .bubble{padding:10px 14px;border-radius:14px;line-height:1.5;font-size:13.5px;white-space:pre-wrap;word-wrap:break-word;}
+  .user .bubble{background:var(--user-bg);color:var(--user-fg);border-bottom-right-radius:5px;}
+  .bot .bubble{background:var(--bot-bg);border:1px solid var(--line2);color:var(--bot-fg);border-bottom-left-radius:5px;}
+  /* markdown inside bot bubbles */
+  .bubble p{margin:0 0 8px;} .bubble p:last-child{margin-bottom:0;}
+  .bubble h4,.bubble h5,.bubble h6{margin:6px 0 4px;font-size:13.5px;font-weight:700;}
+  .bubble ul,.bubble ol{margin:4px 0 8px;padding-left:20px;} .bubble li{margin:2px 0;}
+  .bubble code{background:rgba(127,127,127,.16);padding:1px 5px;border-radius:5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;}
+  .bubble pre{background:rgba(127,127,127,.14);border:1px solid var(--line);border-radius:9px;padding:9px 11px;margin:6px 0;overflow-x:auto;}
+  .bubble pre code{background:none;padding:0;}
+  .bubble a{color:var(--blue);text-decoration:underline;}
+  .bubble table{border-collapse:collapse;margin:6px 0;width:100%;display:block;overflow-x:auto;font-size:12.5px;}
+  .bubble th,.bubble td{border:1px solid var(--line);padding:5px 9px;text-align:left;white-space:nowrap;}
+  .bubble th{background:rgba(127,127,127,.12);font-weight:700;}
+  .bubble tr:nth-child(even) td{background:rgba(127,127,127,.05);}
+  .badge2{display:inline-block;font-size:11px;padding:2px 9px;border-radius:20px;margin-top:8px;}
+  .badge2.book{background:#e8f0e9;color:var(--green);} .badge2.esc{background:#f7e7e2;color:#b23b2e;} .badge2.collect{background:#f6ecde;color:var(--amber);}
+  .meta{font-size:11px;color:var(--faint);margin:6px 4px 0;}
+  .composer{border-top:1px solid var(--line);padding:11px 16px;display:flex;gap:9px;}
+  #text{flex:1;padding:9px 13px;border:1px solid var(--line);border-radius:10px;background:var(--input);color:var(--ink);font-family:inherit;font-size:14px;}
+  #text::placeholder{color:var(--faint);}
+  #text:focus{outline:none;border-color:var(--muted);}
+
+  .btn,.mode,#recVoice{touch-action:manipulation;-webkit-tap-highlight-color:transparent;}
+
+  /* mobile top bar + drawer scrim + floating call button (hidden on desktop) */
+  .mbar{display:none;}
+  .scrim{display:none;}
+  #mCall{display:none;}
+  .mobile-only{display:none;}
+
+  /* ---- tablet: stack to a scrolling single column ---- */
+  @media(max-width:1080px) and (min-width:761px){
+    body{overflow:auto;-webkit-text-size-adjust:100%;}
+    .app,.app.no-orb{grid-template-columns:1fr;height:auto;}
+    .panel{height:auto;overflow:visible;border-radius:16px;}
+    #stage{min-height:52vh;padding:20px;}
+    .convo{min-height:60vh;}
+    #text,.field select,.btn,.mode{font-size:16px;}
+  }
+
+  /* On a phone the stage is a full-bleed hero — the mascot is anchored to the bottom
+     and the controls stack above it. A 50/50 grid fights that layout and pushes the
+     inspector off the bottom of the screen (measured: 393px of panel in an 820px stage
+     that then overflowed). Keep the phone on the normal flow and let the inspector sit
+     below the hero, scrolling with it. */
+  @media(max-width:760px){
+    #stage.split{display:flex;grid-template-rows:none;padding:0;gap:0;}
+    #stage.split>.pane,#stage.split>#inspector{height:auto;overflow:visible;}
+    #stage.split .orbwrap{flex:none;width:min(44vmin,300px);height:min(44vmin,300px);}
+    #stage.split .pane-body{height:auto;}
+    #stage.split .pane-btn{display:none;}   /* nothing to trade space with here */
+  }
+
+  /* ---- phone: app layout — enlarged mascot hero + chat below, settings in a drawer ---- */
+  @media(max-width:760px){
+    body{overflow:hidden;-webkit-text-size-adjust:100%;}
+    #text,.field select,.btn,.mode{font-size:16px;}
+
+    /* NO navbar — one floating toolbar of icon buttons, top-left */
+    .mbar{display:flex;position:fixed;top:0;left:0;padding:12px;z-index:40;background:none;border:none;pointer-events:none;}
+    .mtools{display:inline-flex;pointer-events:auto;}   /* no box — hamburger icon only */
+    .mbar .icon{width:44px;height:44px;border:none;background:none;padding:0;color:var(--ink);
+      display:flex;align-items:center;justify-content:center;cursor:pointer;flex:none;}
+    .mbar .icon svg{width:26px;height:26px;filter:drop-shadow(0 1px 3px rgba(0,0,0,.5));}
+    .mbar .mtitle{display:none;}
+
+    .app,.app.no-orb{display:block;height:auto;padding:0;grid-template-columns:none;}
+
+    /* full-screen dark stage; mascot peeks from the BOTTOM, controls stack just above it */
+    #stage{position:fixed;top:0;left:0;right:0;bottom:0;border:none;border-radius:0;box-shadow:none;overflow:hidden;
+      background:var(--stage-bg);display:flex;flex-direction:column;align-items:center;justify-content:flex-end;
+      gap:12px;padding:0 16px 40vh;}
+    /* Gemini-style ambient glow behind the mascot — slowly shifts colour */
+    #stage::before{content:'';position:absolute;left:50%;bottom:-16%;transform:translateX(-50%);
+      width:150vw;height:82vh;border-radius:50%;z-index:0;pointer-events:none;
+      background:radial-gradient(closest-side, rgba(124,92,255,.55), rgba(56,189,248,.28) 55%, transparent 78%);
+      filter:blur(48px);animation:ambient 14s linear infinite;}
+    @keyframes ambient{to{filter:blur(48px) hue-rotate(360deg);}}
+    #stage>*{position:relative;z-index:2;}
+
+    /* mascot: big circle anchored near the bottom (nudged a bit lower) */
+    #stage .orbwrap{position:absolute;left:50%;bottom:-19vh;transform:translateX(-50%);z-index:1;
+      width:min(150vw,680px);height:min(150vw,680px);}
+    /* transcription pinned near the top (clear of the floating menu) */
+    #stage .caption{position:absolute;top:calc(env(safe-area-inset-top) + 100px);left:0;right:0;max-width:none;padding:0 20px;font-size:14px;z-index:3;}
+    /* audio wave sits right BELOW the transcription text */
+    #stage .wave{position:absolute;top:calc(env(safe-area-inset-top) + 156px);left:50%;transform:translateX(-50%);
+      width:min(72%,300px);height:52px;z-index:3;}
+    #stage .hint,#stage .orb-label{display:none;}
+    .expand-btn{display:none;}
+    /* Start/End call — floating GREEN pill, top-right */
+    #mCall{display:inline-flex;position:absolute;top:12px;right:12px;z-index:41;
+      align-items:center;gap:7px;border:none;border-radius:22px;padding:11px 20px;font-family:inherit;font-size:14px;font-weight:600;
+      background:#22c55e;color:#052e16;cursor:pointer;box-shadow:0 6px 16px rgba(34,197,94,.4);}
+    #mCall.live{background:#ef4444;color:#fff;box-shadow:0 6px 16px rgba(239,68,68,.4);}
+
+    /* conversation = slide-up bottom sheet (opened by the 💬 button) */
+    .convo{position:fixed;left:0;right:0;bottom:0;top:auto;height:84dvh;border:none;border-radius:20px 20px 0 0;
+      background:var(--card);box-shadow:0 -12px 34px rgba(0,0,0,.32);z-index:50;
+      transform:translateY(102%);transition:transform .28s ease;}
+    .convo.open{transform:none;}
+    .convo .eyebrow{padding:16px 18px 4px;}
+    .convo .eyebrow::before{content:'';position:absolute;top:8px;left:50%;transform:translateX(-50%);width:40px;height:4px;border-radius:4px;background:var(--line);}
+    #chat{padding:4px 16px 8px;}
+    .composer{padding:10px 12px calc(10px + env(safe-area-inset-bottom));}
+
+    /* settings = left slide-in drawer (opened by the ☰ button) */
+    .side{position:fixed;top:0;left:0;bottom:0;width:min(86vw,340px);height:100dvh;z-index:55;border-radius:0 18px 18px 0;
+      transform:translateX(-102%);transition:transform .25s ease;padding-top:16px;}
+    .side.open{transform:none;}
+    .scrim{display:block;position:fixed;inset:0;background:rgba(0,0,0,.45);opacity:0;pointer-events:none;transition:.25s;z-index:48;}
+    .scrim.on{opacity:1;pointer-events:auto;}
+    .mobile-only{display:flex !important;}   /* the drawer's "View conversation" button */
+  }
+</style>
+</head>
+<body>
+<!-- mobile top bar (phone only) -->
+<div class="mbar">
+  <div class="mtools">
+    <button class="icon" id="mMenu" title="Menu" aria-label="Open menu">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+    </button>
+  </div>
+</div>
+<div class="scrim" id="scrim"></div>
+
+<div class="app" id="app">
+  <!-- ============ LEFT · SETTINGS + MODES ============ -->
+  <aside class="panel side">
+    <div class="brand">
+      <canvas class="logo" id="mlogo" title="ZenSuvidha mascot"></canvas>
+      <div>
+        <h1>ZenSuvidha · Voice</h1>
+        <p>Talk to your AI receptionist.</p>
+      </div>
+      <button class="theme-btn" id="themeBtn" title="Toggle dark / light">🌙</button>
+    </div>
+    <span class="badge"><span class="dot" id="statusDot"></span><span id="statusText">connecting…</span></span>
+
+    <button class="btn mobile-only" id="sideChat" style="justify-content:center;gap:8px;">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+      View conversation
+    </button>
+
+    <div class="sec">Settings</div>
+    <div class="fields">
+      <div class="field"><label>Business</label><select id="pack"></select></div>
+      <div class="field"><label>Language</label><select id="lang">
+        <option value="">Auto-detect</option>
+        <option value="en">English</option>
+        <option value="hi">Hindi · हिन्दी</option>
+        <option value="te">Telugu · తెలుగు</option>
+        <option value="ta">Tamil · தமிழ்</option>
+        <option value="bn">Bengali · বাংলা</option>
+        <option value="mr">Marathi · मराठी</option>
+        <option value="gu">Gujarati · ગુજરાતી</option>
+        <option value="kn">Kannada · ಕನ್ನಡ</option>
+        <option value="ml">Malayalam · മലയാളം</option>
+        <option value="pa">Punjabi · ਪੰਜਾਬੀ</option>
+        <option value="ur">Urdu · اردو</option>
+        <option value="or">Odia · ଓଡ଼ିଆ</option>
+        <option value="as">Assamese · অসমীয়া</option>
+      </select></div>
+      <div class="field"><label>Voice</label><select id="voice"><option value="">Pack default</option></select></div>
+      <div class="field"><label>Model (speed)</label><select id="model"></select></div>
+    </div>
+
+    <div class="actions">
+      <button class="btn primary" id="startBtn">Start call</button>
+      <button class="btn" id="endBtn" disabled>End call</button>
+      <button class="btn danger" id="clearBtn">Clear</button>
+      <span class="state" id="stateLabel">Idle</span>
+    </div>
+
+    <div class="sec">Mode</div>
+    <div class="modes" id="modes">
+      <button class="mode on" data-m="auto">Auto</button>
+      <button class="mode" data-m="ptt">Hold Space</button>
+      <button class="mode" id="sttFastBtn" title="Greedy decode + no denoise — faster transcription, slightly less accurate">⚡ Fast STT</button>
+      <button class="mode" id="dfBtn" disabled title="Run DeepFilterNet noise suppression before transcription. Measured to make transcription WORSE (WER 0.10 vs 0.00) — on to hear the difference for yourself.">🎛 DeepFilter</button>
+      <button class="mode" id="isoBtn" disabled title="Split the turn by speaker and transcribe only YOUR voice. Rescues turns a colleague talking in a gap would otherwise discard.">🗣 Voice Isolation</button>
+    </div>
+    <div class="toggle on" id="orbToggle" title="Show/hide the AI voice orb"><span>AI voice orb</span><span class="pill"></span></div>
+
+    <div class="brand-voice">
+      <div class="bv-title">★ Brand voice <span>— clone the owner's voice</span></div>
+      <button class="btn" id="recVoice">● Record my voice (15s)</button>
+      <span class="bv-hint" id="bvHint">Record ~15s of clear speech in a quiet spot — the cleaner the audio, the better the clone.</span>
+    </div>
+  </aside>
+
+  <!-- ============ CENTRE · AI VOICE ORB (no box) ============ -->
+  <!-- Two panes. With no filtering module running there is only the orb and it fills
+       the stage exactly as before; switch one on and the stage splits in half, each
+       pane growable on its own so you can watch the spectrogram closely without
+       losing the agent, or vice versa. -->
+  <section id="stage" data-grow="even">
+    <button class="expand-btn" id="expandBtn" title="Full-screen voice">⛶</button>
+
+    <div class="pane" id="orbPane">
+      <button class="pane-btn" id="orbGrow" title="Enlarge the assistant" aria-label="Enlarge the assistant">⤢</button>
+      <div class="pane-body">
+        <div class="orbwrap"><canvas id="viz"></canvas></div>
+        <div class="orb-label" id="orbLabel">READY</div>
+        <canvas id="wave" class="wave"></canvas>
+        <div class="caption" id="caption" hidden></div>
+        <div class="hint" id="hint">Press <b>Start call</b> and just speak — I'll listen and reply. Interrupt me anytime.</div>
+        <button id="mCall">Start call</button>
+      </div>
+    </div>
+
+    <!-- Audio inspector: only appears when a filtering module is switched on, so the
+         default UI stays uncluttered. Shows what is reaching the recogniser and what
+         is being thrown away, rather than asking anyone to take it on trust. -->
+    <div id="inspector" hidden>
+      <button class="pane-btn" id="inspGrow" title="Enlarge the inspector" aria-label="Enlarge the inspector">⤢</button>
+      <div class="insp-head">
+        <span class="eyebrow">Audio inspector</span>
+        <span id="inspMods"></span>
+      </div>
+      <canvas id="spec" title="Live spectrogram — brighter is louder. The band 300–3400 Hz is what the level gate listens to."></canvas>
+      <div class="spec-axis"><span>8k</span><span>4k</span><span>2k</span><span>1k</span><span>300</span><span>0 Hz</span></div>
+      <div id="inspRows" data-empty="Nothing analysed yet — start the call and speak. Each turn will show what reached the recogniser and what was filtered out."></div>
+    </div>
+  </section>
+
+  <!-- ============ RIGHT · CONVERSATION ============ -->
+  <main class="panel convo">
+    <div class="eyebrow">Conversation</div>
+    <div id="chat"></div>
+    <div class="composer">
+      <input id="text" placeholder="Or type a message…" autocomplete="off">
+      <button class="btn primary" id="send">Send</button>
+    </div>
+  </main>
+</div>
+
+<!-- fullscreen voice mode (conversation stays faintly behind) -->
+<div class="voice-fs" id="voiceFS" hidden>
+  <button class="fs-min" id="fsMin">⤡ Minimize</button>
+  <div class="fs-orb"><canvas id="vizBig"></canvas></div>
+  <div class="orb-label fs-lbl" id="fsLabel">READY</div>
+  <div class="fs-controls">
+    <button class="btn primary" id="fsCall">Start call</button>
+    <div class="modes">
+      <button class="mode on" data-m="auto">Auto</button>
+      <button class="mode" data-m="ptt">Hold Space</button>
+    </div>
+  </div>
+  <div class="fs-hint" id="fsHint"></div>
+</div>
+
+<script>
+// ---------- DOM ----------
+const chat=document.getElementById('chat'), packSel=document.getElementById('pack'), voiceSel=document.getElementById('voice'), langSel=document.getElementById('lang');
+const textInput=document.getElementById('text'), statusDot=document.getElementById('statusDot'), statusText=document.getElementById('statusText');
+const stateLabel=document.getElementById('stateLabel'), orbLabel=document.getElementById('orbLabel'), hintEl=document.getElementById('hint');
+const startBtn=document.getElementById('startBtn'), endBtn=document.getElementById('endBtn'), clearBtn=document.getElementById('clearBtn');
+const voiceFS=document.getElementById('voiceFS'), fsLabel=document.getElementById('fsLabel'), fsHint=document.getElementById('fsHint'),
+      fsCall=document.getElementById('fsCall'), fsMin=document.getElementById('fsMin'), expandBtn=document.getElementById('expandBtn');
+let ws, currentPack, botBubble=null, barged=false, fsOpen=false, sttFast=false;
+// 'auto' | 'on' | 'off'. dfOn/isoOn stay as the "could run" flag the inspector reads.
+let dfMode='auto', isoMode='auto', dfOn=true, isoOn=true;
+function paintMode(btn, mode, label){
+  if(!btn) return;
+  btn.classList.toggle('on', mode==='on');
+  btn.classList.toggle('auto', mode==='auto');
+  btn.textContent = label + (mode==='auto' ? ' · auto' : mode==='on' ? ' · on' : ' · off');
+}
+
+// ---------- state ----------
+const STATES={
+  idle:     {label:'READY',     color:'#8ea2e8', txt:'Idle'},
+  listening:{label:'LISTENING', color:'#4f8bf0', txt:'Listening…'},
+  user:     {label:'LISTENING', color:'#3f77d6', txt:'You’re speaking'},
+  thinking: {label:'THINKING',  color:'#c98a2c', txt:'Thinking…'},
+  speaking: {label:'SPEAKING',  color:'#3fae74', txt:'Speaking'},
+};
+function hexA(hex,a){ const n=parseInt(hex.slice(1),16); return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`; }
+let state='idle';
+function setState(s){ state=s; const S=STATES[s]; orbLabel.textContent=S.label; fsLabel.textContent=S.label; stateLabel.textContent=S.txt; }
+function syncControls(){
+  startBtn.disabled=callActive; endBtn.disabled=!callActive;
+  fsCall.textContent=callActive?'End call':'Start call';
+  fsCall.classList.toggle('danger', callActive);
+  const mc=document.getElementById('mCall');
+  if(mc){ mc.textContent=callActive?'End call':'Start call'; mc.classList.toggle('live',callActive); }
+}
+
+// ---------- chat bubbles ----------
+function scrollDown(){ chat.scrollTop=chat.scrollHeight; }
+function newRow(role, tag){
+  const r=document.createElement('div'); r.className='row '+role;
+  if(tag){ const t=document.createElement('div'); t.className='tag'; t.textContent=tag; r.appendChild(t); }
+  const b=document.createElement('div'); b.className='bubble'; r.appendChild(b);
+  chat.appendChild(r); scrollDown(); return b;
+}
+function dropIfEmpty(b){
+  // A turn cancelled by barge-in leaves its bubble empty. Blank "Assistant" rows piling
+  // up in the transcript read as the agent silently failing — remove them.
+  if(!b || b.textContent.trim()) return;
+  const row=b.parentNode; if(row && row.parentNode) row.parentNode.removeChild(row);
+}
+function noteMuted(b){
+  // The reply had text but no audio: the selected voice cannot pronounce this script.
+  // Silence alone is indistinguishable from the agent cutting out, so say so.
+  if(!b) return;
+  const n=document.createElement('div'); n.className='meta';
+  n.textContent='🔇 this voice can\u2019t speak that script — pick an Indian voice, or set tts.provider: indic_parler';
+  b.parentNode.appendChild(n);
+}
+function addMsg(role, text, tag){ const b=newRow(role, tag||(role==='user'?'You':'Assistant')); b.textContent=text; scrollDown(); return b; }
+function badgeFor(m){ const a=m.action||{}; if(m.escalated)return{c:'esc',t:'⚠ escalating to a human'}; if(a.booking_id)return{c:'book',t:'✅ booked #'+a.booking_id}; if(a.type==='collect'&&a.missing&&a.missing.length)return{c:'collect',t:'needs: '+a.missing.join(', ')}; return null; }
+function setBadge(b,m){ const x=badgeFor(m); if(!x||!b)return; const e=document.createElement('div'); e.className='badge2 '+x.c; e.textContent=x.t; b.parentNode.appendChild(e); }
+function addMeta(b,t){ if(!t)return; const bits=[]; if(t.llm_first_token_ms!=null)bits.push('first audio ~'+t.llm_first_token_ms+'ms'); if(t.total_ms!=null)bits.push('total '+t.total_ms+'ms'); if(!bits.length)return; const m=document.createElement('div'); m.className='meta'; m.textContent=bits.join(' · '); b.parentNode.appendChild(m); }
+
+// ---------- Web Audio: playback on ONE sample-accurate timeline ----------
+// Every piece of agent audio — whole-sentence WAVs and streamed PCM frames alike — is
+// scheduled against a single clock instead of chained through onended. onended fires a
+// few ms late: inaudible between sentences, but a click-track when one sentence
+// arrives as forty small frames. Starting each buffer exactly where the previous one
+// ends removes the gap outright.
+let audioCtx=null, analyser=null, silentGain=null, agentPlaying=false;
+let schedT=0, schedLive=new Set();
+const SCHED_LEAD=0.08;          // 80ms of slack so a late frame never underruns the clock
+function ensureCtx(){
+  if(!audioCtx){
+    audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+    analyser=audioCtx.createAnalyser(); analyser.fftSize=256; analyser.smoothingTimeConstant=.75; analyser.connect(audioCtx.destination);
+    silentGain=audioCtx.createGain(); silentGain.gain.value=0; silentGain.connect(audioCtx.destination);
+  }
+  if(audioCtx.state==='suspended') audioCtx.resume();
+}
+let decodeChain=Promise.resolve(), audioGen=0;
+function scheduleBuf(buf, gen){
+  if(!buf || gen!==audioGen) return;                // barged mid-decode — drop it
+  const src=audioCtx.createBufferSource();
+  src.buffer=buf; src.connect(analyser);
+  schedT=Math.max(audioCtx.currentTime+SCHED_LEAD, schedT);
+  src.start(schedT); schedT+=buf.duration;
+  schedLive.add(src);
+  agentPlaying=true; setState('speaking');
+  src.onended=()=>{
+    schedLive.delete(src);
+    // Buffers join the set when SCHEDULED, not when they start, so an empty set means
+    // nothing further is pending and the agent has genuinely stopped speaking.
+    if(!schedLive.size && gen===audioGen){
+      agentPlaying=false;
+      if(state==='speaking') setState(callActive?'listening':'idle');
+    }
+  };
+}
+// Chain decodes so buffers reach the timeline in ARRIVAL order. decodeAudioData is
+// async; a shorter later sentence can otherwise finish first and play out of order.
+function _decodeInOrder(arrayBuf){
+  ensureCtx();
+  const gen=audioGen;   // captured now; a barge-in bumps audioGen and voids stale decodes
+  decodeChain=decodeChain.then(async()=>{
+    try{ scheduleBuf(await audioCtx.decodeAudioData(arrayBuf), gen); }catch(e){}
+  });
+}
+function enqueueAudio(b64){        // base64 path — used by the HTTP /voice/clone preview
+  if(!b64) return;
+  const bytes=Uint8Array.from(atob(b64),c=>c.charCodeAt(0));
+  _decodeInOrder(bytes.buffer);
+}
+function enqueueAudioBuf(arrayBuf){ // binary-frame path — the live WS audio
+  if(arrayBuf&&arrayBuf.byteLength) _decodeInOrder(arrayBuf);
+}
+// Streamed PCM: raw little-endian int16 at the provider's OWN rate. A buffer created
+// at 24kHz is resampled by Web Audio on playback, so there's nothing to convert here.
+// Goes through the same chain as the WAV path so both share one ordered timeline.
+function enqueuePCM(arrayBuf, sr){
+  if(!arrayBuf || arrayBuf.byteLength<2) return;
+  ensureCtx();
+  const gen=audioGen;
+  decodeChain=decodeChain.then(()=>{
+    try{
+      const i16=new Int16Array(arrayBuf);
+      const b=audioCtx.createBuffer(1, i16.length, sr||24000), ch=b.getChannelData(0);
+      for(let i=0;i<i16.length;i++) ch[i]=i16[i]/32768;
+      scheduleBuf(b, gen);
+    }catch(e){}
+  });
+}
+// How loud is the agent's own output right now? Only the self-echo guard uses it, so a
+// rough envelope is enough — and it costs nothing while the agent is silent.
+let _agentLvl=0, _agentLvlAt=0;
+function agentLevel(){
+  if(!agentPlaying || !analyser) return 0;
+  const now=performance.now();
+  if(now-_agentLvlAt < 40) return _agentLvl;         // ~25Hz is plenty
+  _agentLvlAt=now;
+  const b=new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteTimeDomainData(b);
+  let peak=0;
+  for(let i=0;i<b.length;i++){ const v=Math.abs(b[i]-128)/128; if(v>peak) peak=v; }
+  _agentLvl=peak;
+  return peak;
+}
+function stopAgentAudio(){
+  audioGen++; schedT=0;                             // voids in-flight decodes + onended
+  for(const s of schedLive){ try{s.stop();}catch(_){} }
+  schedLive.clear(); agentPlaying=false;
+}
+
+// ---------- microphone + VAD (hands-free auto turn-taking) ----------
+let callActive=false, micStream=null, micSource=null, micNode=null, micAnalyser=null, workletReady=false;
+let vad='silence', uttPCM=[], preRoll=[], micMode='auto', pttHeld=false;
+let speechMs=0, silenceMs=0, bargeMs=0, uttMs=0, noiseFloor=0.004, specSent=false;
+let maxGapMs=0;                 // longest pause inside the current utterance — see LATCH_MS
+// How this caller actually pauses. A fixed window suits nobody: some people rattle
+// through a sentence, others stop dead in the middle of one to think. We watch the
+// pauses they demonstrably speak THROUGH and widen the window to clear them, so a long
+// sentence is never chopped, while a caller who just says "haan" still gets a fast reply.
+let speakerPauseMs=0, lastEndpointAt=0, lastEndpointMs=0, specAt=0, specTries=0;
+// A guess is only worth committing on once the server has confirmed it heard WORDS
+// (a `partial`). An empty guess used to be committed anyway — the recording was
+// dropped on our side and there was nothing to answer with on theirs.
+let specWords=false, specUttMs=0, pendingPCM=null, commitTimer=null;
+// Set when the server has looked at the words so far and judged the sentence unfinished
+// ("मेरा मोबाइल नंबर" — the number is still coming). Silence alone cannot know that.
+let holdForMore=false;
+const HOLD_EXTRA_MS = 900;
+function endpointMs(){
+  // A one-word answer is finished the moment it stops — "हाँ" needs no thinking time, and
+  // making it wait would slow every turn. Only a sentence long enough to have a MIDDLE
+  // gets the longer window, because that is where people stop to search for a word.
+  const base = (uttMs < LONG_UTT_MS)
+    ? ENDPOINT_MS
+    : Math.max(ENDPOINT_LONG_MS, speakerPauseMs*1.25);
+  // A sentence the server can SEE is unfinished earns extra time regardless of length —
+  // "मेरा नाम" is short and obviously not done.
+  return Math.min(ENDPOINT_MAX_MS + (holdForMore ? HOLD_EXTRA_MS : 0),
+                  base + (holdForMore ? HOLD_EXTRA_MS : 0));
+}
+function notePause(ms){          // they carried on talking after a pause this long
+  if(ms > speakerPauseMs){
+    speakerPauseMs = ms;
+    console.log(`[vad] caller pauses mid-sentence up to ${ms|0}ms → endpoint now ${endpointMs()|0}ms`);
+  }
+}
+// Milliseconds, not frame counts. The old constants were tied to one buffer size and
+// one sample rate, so "11 frames" quietly meant something different on other hardware.
+const SPEECH_ON_MS = 128;   // sustained speech before a turn opens
+const ENDPOINT_MS  = 800;   // BASE silence that ends a turn. The old ~470ms cut callers off
+                            //   mid-sentence: people pause before saying a phone number,
+                            //   and "मेरा मोबाइल नंबर" was being sent WITHOUT the number.
+                            //   This is now a floor, not the whole story — see endpointMs().
+const ENDPOINT_LONG_MS = 1200;  // …but an utterance long enough to HAVE a middle starts here:
+                            //   that is where people stop to think, and 800ms cut them off
+const LONG_UTT_MS  = 1500;  // above this an utterance counts as a sentence, not an answer
+const ENDPOINT_MAX_MS = 2000;  // ceiling, so a noisy line can never hang the turn open
+const CUT_OFF_MS   = 900;   // a new turn starting this soon after the last one ended is
+                            //   the caller finishing a sentence we interrupted
+const SPEC_MS      = 450;   // transcribe speculatively here, while still recording
+const SPEC_MIN_MS  = 800;   //   …but only for utterances long enough to be worth a pass
+const PREROLL_MS   = 300;   // pre-speech kept so word onsets aren't clipped
+const BARGE_MS     = 250;   // sustained speech over the agent before we cut it off
+// A speakerphone echo returns attenuated by the room; a caller speaking into the handset
+// does not. 0.45 is ~7dB below our own output — above a typical return path, well below
+// a real voice. See the self-echo guard in handleFrame.
+const ECHO_MARGIN  = 0.45;
+const MIN_UTT_MS   = 350;   // shorter than this is a cough, not a turn
+const SPEC_MIN_GAP_MS = 2500;  // never re-speculate faster than this
+const SPEC_MAX_TRIES  = 3;     // ...and at most this many times per utterance
+const SPEC_MAX_S      = 12;    // ...over at most this many seconds of audio
+const SPEC_STALE_MS   = 700;   // words spoken AFTER the guess. The guess is a snapshot; if
+                               //   the caller kept talking past this, committing on it
+                               //   answers a sentence they had not finished saying.
+const COMMIT_WAIT_MS  = 2500;  // no answer to a commit in this long → send the audio anyway,
+                               //   so a lost frame can never strand the turn on "thinking"
+// A LATCHED VAD. Loud continuous audio — a speaker at full volume beside the mic —
+// never gives the detector a silence, so the turn never ends and the buffer just grows.
+// Measured from a real session: 12s and 15s clips Whisper returned NOTHING for, and a
+// voiceprint scoring the caller 0.07 because the clip was mostly music.
+//
+// People breathe. A human sentence has gaps; continuous playback does not. So if we have
+// been recording this long and never seen even a short pause, this is not somebody
+// talking — cut it and ask them to say it again, rather than sending Whisper fifteen
+// seconds of noise and getting an empty string back.
+const LATCH_MS     = 7000;  // recording this long...
+const LATCH_GAP_MS = 260;   // ...without ever seeing a pause this short = not a person
+const MAX_UTT_MS   = 25000; // hard stop. Nobody speaks one sentence for a minute, so if
+                            //   we are still recording we have latched onto steady noise.
+                            //   Without this the buffer grows without bound and the frame
+                            //   eventually exceeds the server's 8MB cap — at which point
+                            //   the whole turn was silently discarded. 60s was far too
+                            //   generous: background music holds the VAD open, and a
+                            //   measured session reached 42s (1.36MB) before stopping.
+
+// ---- optional Silero VAD (bash scripts/download_vad.sh) ----
+// Energy cannot tell a fan from a voice; Silero can. Served from our own host so the
+// app stays offline. Without it we use the adaptive floor below — still a large
+// improvement on the fixed threshold it replaces, just not a real classifier.
+const silero={ready:false,sess:null,state:null,h:null,c:null,srT:null,legacy:false,prob:0,ctx:null};
+const SILERO_CTX=64;   // samples of the PREVIOUS frame the v5 model expects prepended
+let vadLabel='';
+function loadScript(src){
+  return new Promise((res,rej)=>{ const s=document.createElement('script');
+    s.src=src; s.onload=res; s.onerror=rej; document.head.appendChild(s); });
+}
+function resetSilero(){
+  if(!silero.sess) return;
+  // Three model generations are in the wild and download_vad.sh tracks master, so
+  // detect rather than assume — a silent mismatch would disable the VAD entirely.
+  //   v6  outputs speech_probs · input [n,576] · h/c [1,1,128] · no sr
+  //   v5  outputs output/stateN · input [1,576] · state [2,1,128] · sr
+  //   v4  outputs output/hn/cn  · input [1,512] · h/c [2,1,64]   · sr
+  const names=silero.sess.inputNames||[], outs=silero.sess.outputNames||[];
+  silero.v6 = outs.includes('speech_probs');
+  silero.legacy = !silero.v6 && !names.includes('state');
+  silero.ctx = new Float32Array(SILERO_CTX);
+  if(silero.v6){
+    silero.h=new ort.Tensor('float32',new Float32Array(128),[1,1,128]);
+    silero.c=new ort.Tensor('float32',new Float32Array(128),[1,1,128]);
+  }else if(silero.legacy){
+    silero.h=new ort.Tensor('float32',new Float32Array(2*64),[2,1,64]);
+    silero.c=new ort.Tensor('float32',new Float32Array(2*64),[2,1,64]);
+  }else{
+    silero.state=new ort.Tensor('float32',new Float32Array(2*128),[2,1,128]);
+  }
+  console.log('[vad] Silero '+(silero.v6?'v6':(silero.legacy?'v4':'v5'))+' interface');
+}
+async function initSilero(){
+  try{
+    const head=await fetch('/vendor/silero_vad.onnx',{method:'HEAD'});
+    if(!head.ok) return;                     // not vendored — adaptive energy VAD it is
+    await loadScript('/vendor/ort.wasm.min.js');
+    ort.env.wasm.wasmPaths='/vendor/';
+    ort.env.wasm.numThreads=1;               // single-threaded → no COOP/COEP headers needed
+    ort.env.logLevel='error';
+    silero.sess=await ort.InferenceSession.create('/vendor/silero_vad.onnx',{executionProviders:['wasm']});
+    silero.srT=new ort.Tensor('int64',BigInt64Array.from([16000n]));
+    resetSilero();
+    silero.ready=true; vadLabel='Silero VAD'; setHint();
+  }catch(e){ console.warn('Silero VAD unavailable — using adaptive energy VAD:',e); }
+}
+async function sileroProb(f16k){
+  if(silero.v6){                              // v6: 576-wide input, h/c, no sr
+    const x=new Float32Array(SILERO_CTX+f16k.length);
+    x.set(silero.ctx,0); x.set(f16k,SILERO_CTX);
+    silero.ctx=f16k.slice(f16k.length-SILERO_CTX);
+    const o=await silero.sess.run({input:new ort.Tensor('float32',x,[1,x.length]),
+                                   h:silero.h, c:silero.c});
+    silero.h=o.hn||silero.h; silero.c=o.cn||silero.c;
+    const d=o.speech_probs.data;
+    return d[d.length-1];                     // last frame's probability
+  }
+  if(silero.legacy){                          // v4: plain 512-sample frame, h/c state
+    const o=await silero.sess.run({input:new ort.Tensor('float32',f16k,[1,f16k.length]),
+                                   sr:silero.srT, h:silero.h, c:silero.c});
+    silero.h=o.hn||silero.h; silero.c=o.cn||silero.c;
+    return o.output.data[0];
+  }
+  // v5 wants the PREVIOUS frame's last 64 samples prepended. Without that context it
+  // returns ~0 even for loud, clear speech — verified frame-by-frame against the ONNX
+  // itself (0.11 without context vs 0.99 with), so this is not optional.
+  const x=new Float32Array(SILERO_CTX+f16k.length);
+  x.set(silero.ctx,0); x.set(f16k,SILERO_CTX);
+  silero.ctx=f16k.slice(f16k.length-SILERO_CTX);
+  const o=await silero.sess.run({input:new ort.Tensor('float32',x,[1,x.length]),
+                                 state:silero.state, sr:silero.srT});
+  silero.state=o.stateN||silero.state;
+  return o.output.data[0];
+}
+
+// Frames arrive every 32ms and Silero inference is async, so drain them through one
+// pump: the state machine always sees them in order, and if inference ever falls
+// behind realtime we fall back to the energy gate rather than adding latency.
+let frameQ=[], pumping=false;
+function onFrameMsg(f){ frameQ.push(f); if(!pumping) pump(); }
+async function pump(){
+  pumping=true;
+  while(frameQ.length){
+    const f=frameQ.shift();
+    try{ await handleFrame(f, frameQ.length>8); }catch(e){}
+  }
+  pumping=false;
+}
+
+function floatTo16kWav(chunks, srcRate){
+  let total=0; chunks.forEach(c=>total+=c.length);
+  const flat=new Float32Array(total); let off=0; chunks.forEach(c=>{flat.set(c,off);off+=c.length;});
+  const dst=16000; let data=flat;
+  if(srcRate>dst){ const ratio=srcRate/dst, len=Math.round(flat.length/ratio), out=new Float32Array(len);
+    let oi=0,ii=0; while(oi<len){ const n=Math.round((oi+1)*ratio); let s=0,c=0; for(let i=ii;i<n&&i<flat.length;i++){s+=flat[i];c++;} out[oi]=c?s/c:0; oi++; ii=n; } data=out; }
+  const buf=new ArrayBuffer(44+data.length*2), v=new DataView(buf);
+  const ws2=(o,s)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));};
+  ws2(0,'RIFF');v.setUint32(4,36+data.length*2,true);ws2(8,'WAVE');ws2(12,'fmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
+  v.setUint32(24,dst,true);v.setUint32(28,dst*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);ws2(36,'data');v.setUint32(40,data.length*2,true);
+  let o=44; for(let i=0;i<data.length;i++){let s=Math.max(-1,Math.min(1,data[i]));v.setInt16(o,s<0?s*0x8000:s*0x7FFF,true);o+=2;}
+  return {blob:new Blob([v],{type:'audio/wav'}), seconds:data.length/dst};
+}
+
+async function makeMicNode(){
+  // AudioWorklet runs on the AUDIO thread, so drawing the orb or decoding a reply on
+  // the main thread can no longer drop mic frames (which used to make the endpointer
+  // fire early). ScriptProcessor stays as the fallback for older browsers.
+  if(audioCtx.audioWorklet){
+    try{
+      if(!workletReady){ await audioCtx.audioWorklet.addModule('/vad-worklet.js'); workletReady=true; }
+      const n=new AudioWorkletNode(audioCtx,'vad-framer');
+      n.port.onmessage=e=>onFrameMsg(e.data);
+      return n;
+    }catch(e){ console.warn('AudioWorklet unavailable, using ScriptProcessor:',e); }
+  }
+  const n=audioCtx.createScriptProcessor(2048,1,1);
+  const ms=2048/audioCtx.sampleRate*1000;
+  n.onaudioprocess=e=>{                              // same frame shape, minus 16k VAD input
+    const buf=e.inputBuffer.getChannelData(0);
+    let sum=0; for(let i=0;i<buf.length;i++) sum+=buf[i]*buf[i];
+    onFrameMsg({pcm:new Float32Array(buf), f16k:null, rms:Math.sqrt(sum/buf.length), ms});
+  };
+  return n;
+}
+async function startCall(){
+  if(callActive) return;
+  ensureCtx();
+  try{ micStream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,
+        echoCancellation:true, noiseSuppression:true,
+        // AGC OFF: it continuously rescales the signal, so a level-based VAD is always
+        // chasing a floor that AGC just moved. Whisper normalises internally anyway.
+        autoGainControl:false}}); }
+  catch(e){ alert('Microphone permission needed: '+e.message); return; }
+  micSource=audioCtx.createMediaStreamSource(micStream);
+  micAnalyser=audioCtx.createAnalyser(); micAnalyser.fftSize=512; micAnalyser.smoothingTimeConstant=.6;
+  // The defaults are -100..-30dB, which a speaker at full volume beside the mic pins to
+  // 255 across every bin — the spectrogram becomes a solid block and shows nothing at
+  // exactly the moment somebody is trying to see what is drowning them out. Headroom to
+  // -10dB keeps loud audio ON the scale, and fftSize 512 (~94Hz per bin at 48k) is
+  // enough to tell a voice from a bass line.
+  micAnalyser.minDecibels=-85; micAnalyser.maxDecibels=-10;
+  micSource.connect(micAnalyser);                    // viz ONLY — NOT routed to speakers (no echo)
+  micNode=await makeMicNode();
+  micSource.connect(micNode); micNode.connect(silentGain);   // silent sink → no feedback
+  callActive=true; vad='silence';
+  speechMs=silenceMs=bargeMs=uttMs=0; uttPCM=[]; preRoll=[]; frameQ=[]; specSent=false;
+  specWords=false; specUttMs=0; pendingPCM=null; clearTimeout(commitTimer); commitTimer=null;
+  speakerPauseMs=0; lastEndpointAt=0; holdForMore=false;   // re-learn this caller's rhythm each call
+  if(silero.ready) resetSilero();                    // fresh LSTM state per call
+  syncControls(); setHint();
+  setState(micMode==='auto'?'listening':'idle');
+}
+function setHint(){
+  let t = !callActive
+    ? 'Press <b>Start call</b>, then talk hands-free — or switch to <b>Hold&nbsp;Space</b>.'
+    : (micMode==='auto'
+        ? 'Auto mode — just speak; I detect when you start and stop. <b>Interrupt anytime.</b>'
+        : 'Push-to-talk — <b>hold the Spacebar</b> to speak, release to send.');
+  if(vadLabel) t += ` <span style="opacity:.55">· ${vadLabel}</span>`;
+  hintEl.innerHTML=t; fsHint.innerHTML=t;
+}
+function endCall(){
+  callActive=false; pttHeld=false; frameQ=[];
+  dropSpeculation();
+  try{ if(micNode&&micNode.port) micNode.port.onmessage=null;
+       micNode&&micNode.disconnect(); micSource&&micSource.disconnect(); micAnalyser&&micAnalyser.disconnect(); }catch(_){}
+  if(micStream) micStream.getTracks().forEach(t=>t.stop());
+  micStream=micSource=micNode=micAnalyser=null;
+  syncControls(); setHint(); setState('idle');
+}
+// ---- fullscreen voice mode (enlarge / reduce) ----
+function openFS(){ fsOpen=true; voiceFS.hidden=false; ensureCtx&&ensureCtx(); }
+function closeFS(){ fsOpen=false; voiceFS.hidden=true; }
+function bargeIn(){                                  // stop the agent so the caller can speak over it
+  if(agentPlaying){ stopAgentAudio(); try{ws.send(JSON.stringify({type:'cancel'}));}catch(_){}; barged=true; dropIfEmpty(botBubble); botBubble=null; }
+}
+async function handleFrame(f, backlogged){
+  if(!callActive) return;
+
+  // ---- push-to-talk: capture only while Space is held ----
+  if(micMode==='ptt'){
+    // The same cap the hands-free path has. A Space keyup lost to a focus change (alt-tab,
+    // a notification stealing the key) leaves this pushing frames forever — the buffer
+    // grows without bound until the frame blows the server's 8MB limit and the turn is
+    // discarded, after which the caller is holding a dead microphone.
+    if(pttHeld){
+      uttPCM.push(f.pcm); uttMs+=ms;
+      if(uttMs>=MAX_UTT_MS){ pttHeld=false; endUtterance(); }
+    }
+    return;
+  }
+
+  // ---- auto (hands-free VAD) ----
+  const ms=f.ms||32;
+  let speaking;
+  if(silero.ready && !backlogged && f.f16k && f.f16k.length===512){
+    silero.prob=await sileroProb(f.f16k);
+    speaking = silero.prob > (agentPlaying?0.75:0.42);   // stricter while the agent talks
+  }else{
+    // Adaptive floor: gate RELATIVE to this room. The old fixed 0.02 was tuned for one
+    // laptop mic at one distance — a quiet speaker never opened a turn, a noisy room
+    // opened one constantly, and Whisper then hallucinated on the noise.
+    const gate=Math.max(noiseFloor*4.0, 0.006)*(agentPlaying?3:1);
+    speaking = f.rms > gate;
+    if(!speaking) noiseFloor = noiseFloor*0.97 + f.rms*0.03;
+  }
+
+  // While the agent is talking, IGNORE brief noise — only barge in on SUSTAINED speech.
+  if(agentPlaying){
+    // Anything half-captured when the agent started speaking is now STALE. Leaving it
+    // in 'speech' state froze it: recording resumed when the agent stopped, silence
+    // accumulated on top of seconds-old audio, and it was committed as if the caller
+    // had just said it — answering a question two turns behind the conversation.
+    // Discard it. If they really are still talking, BARGE_MS below opens a fresh turn.
+    if(vad==='speech'){ vad='silence'; uttPCM=[]; uttMs=0; silenceMs=0; speechMs=0;
+                        dropSpeculation(); specTries=0; specAt=0; specUttMs=0;
+                        holdForMore=false; }
+    // SELF-ECHO GUARD. Today the browser's AEC removes the agent's own voice before we
+    // ever see it — but AEC is a getUserMedia feature, and a telephony transport has no
+    // getUserMedia. On a phone line the agent WILL hear itself through the caller's
+    // speakerphone, Silero will call it speech, and BARGE_MS will make it interrupt
+    // itself, on a loop.
+    //
+    // So barge-in gets a second condition that does not depend on AEC: real speech over
+    // the top of the agent is LOUDER than the leak. A speakerphone echo comes back
+    // attenuated by the room; somebody talking into the handset does not. Judged
+    // against OUR OWN output level rather than an absolute, so it adapts to the line.
+    const echoBar = Math.max(noiseFloor*6, agentLevel()*ECHO_MARGIN);
+    if(speaking && f.rms < echoBar){
+      bargeMs = Math.max(0, bargeMs-ms);             // our own voice coming back
+      return;
+    }
+    if(speaking){ bargeMs+=ms; if(bargeMs>=BARGE_MS){ bargeIn(); bargeMs=0; } }
+    else bargeMs=Math.max(0,bargeMs-ms);
+    return;                                          // don't capture until agent done / barged
+  }
+  bargeMs=0;
+
+  // keep a short rolling buffer of recent audio so the word onset isn't lost
+  preRoll.push(f.pcm);
+  while(preRoll.length>Math.ceil(PREROLL_MS/ms)) preRoll.shift();
+
+  if(speaking){
+    // Capture BEFORE zeroing: the else-branch below learns from the pause the caller
+    // just spoke THROUGH, and reading silenceMs after the reset always saw 0 — which
+    // silently killed the proactive half of the endpointer's learning. It could then
+    // only adapt AFTER cutting someone off, never before.
+    const pausedFor = silenceMs;
+    if(pausedFor>maxGapMs) maxGapMs=pausedFor;
+    silenceMs=0;
+    if(vad==='silence'){
+      speechMs+=ms;
+      if(speechMs>=SPEECH_ON_MS){
+        // Signal 2: they started again almost immediately after we closed the last turn.
+        // That is the tail of a sentence we cut off. Learn the pause that ACTUALLY
+        // failed — the window we used plus however long they stayed quiet after it —
+        // not the window itself, or we under-correct and cut them off again.
+        const since = performance.now() - lastEndpointAt;
+        if(lastEndpointAt && since < CUT_OFF_MS) notePause(lastEndpointMs + since);
+        vad='speech'; uttPCM=preRoll.slice(); uttMs=preRoll.length*ms; holdForMore=false;
+        maxGapMs=0;
+        specTries=0; specAt=0; specWords=false; specUttMs=0; setState('user');
+      }
+    }else{
+      // Signal 1: they spoke THROUGH a pause this long, so it was never a turn end.
+      if(pausedFor>0) notePause(pausedFor);
+      uttPCM.push(f.pcm); uttMs+=ms;
+      if(uttMs>=LATCH_MS && maxGapMs<LATCH_GAP_MS){
+        // Continuous sound, no breaths. Throw it away and say so: sending it on
+        // produces an empty transcript and a wrecked voiceprint.
+        console.log('[vad] '+(uttMs|0)+'ms with no pause — continuous background audio');
+        vad='silence'; uttPCM=[]; uttMs=0; silenceMs=0; speechMs=0; maxGapMs=0;
+        dropSpeculation(); specTries=0; specAt=0; specUttMs=0;
+        // The inspector's whole job is explaining what happened to the audio. This
+        // is the one path where the SERVER never sees the clip, so nothing would
+        // appear there unless the client says so itself.
+        addInsight({accepted:false, speakers:null, total_s:uttMs/1000, kept_s:0,
+                    heard:'', local:'continuous background audio — never paused, so it '
+                                 +'was never a turn'});
+        askToRepeat("There's continuous audio in the background — I couldn't pick out "
+                    + "your voice. Could you say that again?");
+        return;
+      }
+      if(uttMs>=MAX_UTT_MS){ vad='silence'; lastEndpointAt=performance.now();
+                             lastEndpointMs=endpointMs(); endUtterance(); return; }
+      // They were only pausing. Void the guess EAGERLY — committing a truncated
+      // transcript is the exact failure this whole change exists to prevent, and a
+      // false drop costs nothing but the STT pass we'd already spent.
+      if(specSent) dropSpeculation();
+    }
+  }else{
+    speechMs=0;
+    if(vad==='speech'){
+      uttPCM.push(f.pcm); uttMs+=ms; silenceMs+=ms;
+      if(silenceMs>=SPEC_MS && !specSent && uttMs>=SPEC_MIN_MS) sendSpeculative();
+      const limit=endpointMs();          // read BEFORE endUtterance resets uttMs
+      if(silenceMs>=limit){
+        vad='silence'; lastEndpointAt=performance.now(); lastEndpointMs=limit;
+        endUtterance();
+      }
+    }
+  }
+}
+function wavOf(chunks){ return floatTo16kWav(chunks, audioCtx.sampleRate); }
+function sendSpeculative(){
+  // Transcribe what we have WHILE still recording. If the caller was only drawing
+  // breath we throw it away; if they were finished, the words are already on the
+  // server and STT comes off the critical path entirely.
+  //
+  // BOUNDED, because it used to thrash. Background music never gives the VAD a real
+  // silence, so speech "resumed" every time, the guess was dropped, and 450ms later we
+  // re-sent the WHOLE growing buffer. A measured session fired 21 passes over a buffer
+  // that reached 42s — Whisper spends 10-15s on a clip that long, so the speculation
+  // meant to REMOVE latency became the dominant cost.
+  if(!(ws&&ws.readyState===1)) return;
+  const now=performance.now();
+  if(specTries>=SPEC_MAX_TRIES || now-specAt<SPEC_MIN_GAP_MS) return;
+  // Only the tail is worth guessing on: the endpoint decision is about how the
+  // utterance ENDS, and a 12s window costs a fraction of a 42s one.
+  let tail=uttPCM, secs=uttMs/1000;
+  if(secs>SPEC_MAX_S && audioCtx){
+    const want=Math.ceil(SPEC_MAX_S*audioCtx.sampleRate);
+    tail=[]; let have=0;
+    for(let i=uttPCM.length-1;i>=0 && have<want;i--){ tail.unshift(uttPCM[i]); have+=uttPCM[i].length; }
+  }
+  const {blob,seconds}=wavOf(tail);                 // uttPCM is NOT cleared — still recording
+  if(seconds<MIN_UTT_MS/1000) return;
+  try{
+    ws.send(JSON.stringify({type:'stt_hint',mode:'spec'}));
+    ws.send(blob); specSent=true; specWords=false; specUttMs=uttMs; specAt=now; specTries++;
+  }catch(_){}
+}
+function dropSpeculation(){
+  if(!specSent) return;
+  specSent=false; specWords=false;
+  try{ if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'stt_hint',mode:'drop'})); }catch(_){}
+}
+function endUtterance(){
+  const pcm=uttPCM, ms=uttMs; uttPCM=[]; uttMs=0;
+  const idle=()=>setState(micMode==='auto'?'listening':'idle');
+  // reject near-silent / ambient-noise clips before they cost a full STT pass — now
+  // measured against the room's own floor rather than a fixed number
+  let peak=0; for(const c of pcm){ for(let i=0;i<c.length;i++){ const a=Math.abs(c[i]); if(a>peak) peak=a; } }
+  if(ms<MIN_UTT_MS || peak<Math.max(noiseFloor*6, 0.02)){ dropSpeculation(); idle(); return; }
+  if(!(ws&&ws.readyState===1)){ idle(); return; }
+  holdForMore=false;
+  // Take the zero-STT shortcut ONLY when the guess is actually usable:
+  //   1. the server confirmed it heard words (a `partial` came back) — an empty guess
+  //      committed is a turn that simply vanishes, and
+  //   2. nothing much was said AFTER the guess was taken, or those words are missing
+  //      from the transcript we are about to answer.
+  const fresh = ms - specUttMs;                      // audio recorded since the guess
+  if(specSent && specWords && fresh <= SPEC_STALE_MS){
+    specSent=false;
+    pendingPCM=pcm;                                  // keep it until the server confirms
+    ws.send(JSON.stringify({type:'commit'}));
+    // Belt and braces: if the commit is answered by nothing at all (a dropped frame,
+    // a server-side error), fall back to the audio rather than hanging on "thinking".
+    clearTimeout(commitTimer);
+    commitTimer=setTimeout(()=>{ if(pendingPCM) sendPending(); }, COMMIT_WAIT_MS);
+    setState('thinking'); return;
+  }
+  dropSpeculation();                                 // the guess is stale — void it
+  setState('thinking');
+  ws.send(wavOf(pcm).blob);
+}
+let lastRepeatAt=0;
+const REPEAT_GAP_MS = 12000;    // never nag more often than this
+function askToRepeat(text){
+  // Shown, not spoken. The caller already has loud audio playing; talking over it would
+  // not be heard. Rate limited so a noisy room cannot turn this into a stuck record.
+  const now=performance.now();
+  if(now-lastRepeatAt < REPEAT_GAP_MS) return;
+  lastRepeatAt=now;
+  setCaption(text,'ai');
+  addMsg('bot', text);
+  setState(callActive?(micMode==='auto'?'listening':'idle'):'idle');
+}
+function sendPending(){
+  // The server could not use the guess. Send what the caller actually said.
+  clearTimeout(commitTimer); commitTimer=null;
+  const pcm=pendingPCM; pendingPCM=null;
+  if(!pcm || !(ws&&ws.readyState===1)) return;
+  setState('thinking');
+  ws.send(wavOf(pcm).blob);
+}
+
+// ---------- Audio inspector: spectrogram + what was kept vs removed ----------
+// Only rendered while a filtering module is on, so the default UI is unaffected and
+// nothing is computed when nobody is looking.
+const inspector=document.getElementById('inspector'), inspRows=document.getElementById('inspRows'),
+      inspMods=document.getElementById('inspMods'), specCv=document.getElementById('spec');
+const specCtx=specCv.getContext('2d');
+let specW=0, specH=0, specTimer=null;
+
+function inspectorActive(){ return isoMode!=='off' || dfMode!=='off'; }
+
+const stageEl=document.getElementById('stage'),
+      orbGrowBtn=document.getElementById('orbGrow'),
+      inspGrowBtn=document.getElementById('inspGrow');
+
+function syncInspector(){
+  const on=inspectorActive();
+  inspector.hidden=!on;
+  // The split only exists while there is a second pane to split WITH. With every
+  // filter off the stage goes back to a single centred orb, exactly as before.
+  stageEl.classList.toggle('split', on);
+  if(!on) stageEl.dataset.grow='even';
+  inspMods.textContent=[isoMode!=='off'?('voice isolation ('+isoMode+')'):null,
+                        dfMode!=='off'?('DeepFilter ('+dfMode+')'):null]
+    .filter(Boolean).join('  ·  ') || '';
+  if(on && !specTimer){ specTimer=setInterval(drawSpec, 55); }
+  if(!on && specTimer){ clearInterval(specTimer); specTimer=null; }
+  relayoutPanes();
+}
+
+// The spectrogram canvas is sized in DEVICE pixels off its laid-out box, so every
+// change to the split has to re-measure it or the trace stretches. A frame's delay
+// lets the grid settle before we read the new size. The orb needs nothing here — it
+// re-measures itself on every draw.
+
+function relayoutPanes(){
+  requestAnimationFrame(()=>{ if(inspectorActive()) sizeSpec(); });
+}
+
+function growPane(which){
+  // Click to enlarge, click again to go back to half and half. Only one pane can be
+  // enlarged at a time — that is what makes it a split rather than two toggles.
+  stageEl.dataset.grow = (stageEl.dataset.grow===which) ? 'even' : which;
+  orbGrowBtn.title  = stageEl.dataset.grow==='orb'  ? 'Back to half and half' : 'Enlarge the assistant';
+  inspGrowBtn.title = stageEl.dataset.grow==='insp' ? 'Back to half and half' : 'Enlarge the inspector';
+  relayoutPanes();
+}
+orbGrowBtn.onclick  = ()=>growPane('orb');
+inspGrowBtn.onclick = ()=>growPane('insp');
+// Run it once at load: both toggles default to `auto`, so the panel they describe has
+// to be on screen from the start. Without this the UI contradicted itself — the
+// buttons read "auto" while the panel they control was nowhere to be seen.
+syncInspector();
+function sizeSpec(){
+  const r=specCv.getBoundingClientRect(), dpr=Math.min(devicePixelRatio||1, 2);
+  specW=specCv.width=Math.max(1, Math.round(r.width*dpr));
+  specH=specCv.height=Math.max(1, Math.round(r.height*dpr));
+  specCtx.fillStyle='#05070c'; specCtx.fillRect(0,0,specW,specH);
+}
+addEventListener('resize', relayoutPanes);
+
+// A scrolling spectrogram of the MIC, so you can see the room noise the gate is fighting
+// and where the caller's voice actually sits. The band 300-3400Hz is marked because that
+// is the only part the level gate measures.
+function drawSpec(){
+  const A = (callActive && micAnalyser) ? micAnalyser : null;
+  if(!A || !specW) return;
+  const bins=new Uint8Array(A.frequencyBinCount);
+  A.getByteFrequencyData(bins);
+  // shift left by one column, then draw the newest slice on the right
+  specCtx.drawImage(specCv, -2, 0);
+  const nyq=(audioCtx?audioCtx.sampleRate:48000)/2, top=8000;   // show 0-8kHz
+  for(let y=0; y<specH; y++){
+    const f = (1 - y/specH) * top;                 // low frequencies at the BOTTOM
+    const v = bins[Math.min(bins.length-1, Math.round(f/nyq*bins.length))] || 0;
+    // dark -> blue -> warm, so speech energy reads instantly
+    const t=v/255;
+    const r=Math.round(255*Math.min(1,Math.max(0,t*2-0.7)));
+    const g=Math.round(200*Math.min(1,Math.max(0,t*1.7-0.35)));
+    const b=Math.round(255*Math.min(1,t*1.9));
+    specCtx.fillStyle=`rgb(${r},${g},${b})`;
+    specCtx.fillRect(specW-2, y, 2, 1);
+  }
+  // the speech band the gate listens to
+  const bandTop=specH*(1-3400/top), bandBot=specH*(1-300/top);
+  specCtx.strokeStyle='rgba(255,255,255,.18)'; specCtx.lineWidth=1;
+  specCtx.beginPath(); specCtx.moveTo(specW-2,bandTop); specCtx.lineTo(specW,bandTop);
+  specCtx.moveTo(specW-2,bandBot); specCtx.lineTo(specW,bandBot); specCtx.stroke();
+}
+
+function addInsight(m){
+  if(!inspectorActive()) return;
+  const total=m.total_s||0, kept=m.kept_s||0;
+  const trimmed = m.speakers>1 && kept>0 && kept<total-0.05;
+  const row=document.createElement('div'); row.className='insp-row';
+
+  const top=document.createElement('div'); top.className='insp-top';
+  const tag=(cls,txt)=>{ const e=document.createElement('span'); e.className='insp-tag '+cls;
+                         e.textContent=txt; top.appendChild(e); };
+  tag(m.accepted?'t-keep':'t-drop', m.accepted?'TRANSCRIBED':'DISCARDED');
+  if(m.local){
+    tag('t-info','never sent');
+  }else{
+    // null = diarization did not run, which is a different answer from "one voice".
+    tag('t-info', m.speakers==null ? 'voices not counted'
+                : m.speakers>1 ? `${m.speakers} voices` : '1 voice');
+  }
+  if(typeof m.similarity==='number') tag('t-info', `match ${m.similarity.toFixed(2)}`);
+  // The router decides per turn, so report what it DID, not what is switched on.
+  if(m.denoise) tag('t-info', m.snr_db!=null ? `denoised · ${m.snr_db}dB room` : 'denoised');
+  else if(m.snr_db!=null) tag('t-info', `${m.snr_db}dB room · clean enough`);
+  if(m.filter_ms) tag('t-info', `filters ${m.filter_ms}ms`);
+  if(m.speculative) tag('t-info','guess');
+  row.appendChild(top);
+
+  if(total>0){
+    const bar=document.createElement('div'); bar.className='insp-bar';
+    if(m.local){
+      // Nothing was kept — the clip never left this machine. A full green bar here
+      // would say the opposite of what happened.
+      const d=document.createElement('i'); d.className='b-drop'; d.style.flex='1';
+      bar.appendChild(d);
+    }else{
+      const k=document.createElement('i'); k.className='b-keep';
+      k.style.flex=String(Math.max(kept,0.01));
+      bar.appendChild(k);
+      if(trimmed){ const d=document.createElement('i'); d.className='b-drop';
+                   d.style.flex=String(Math.max(total-kept,0.01)); bar.appendChild(d); }
+    }
+    row.appendChild(bar);
+  }
+
+  const txt=document.createElement('div'); txt.className='insp-txt';
+  const bits=[];
+  if(m.local){
+    // Discarded HERE, before anything was sent. The reason is the whole point of the
+    // row: without it the panel goes blank at the exact moment the caller is trying to
+    // work out what is drowning them out.
+    bits.push(`${total.toFixed(1)}s discarded here — ${m.local}`);
+  }else{
+    if(trimmed) bits.push(`kept ${kept.toFixed(1)}s of ${total.toFixed(1)}s — removed ${(total-kept).toFixed(1)}s of another voice`);
+    else if(total>0) bits.push(`${total.toFixed(1)}s, nothing removed`);
+    if(m.denoise) bits.push('background suppressed before transcription');
+    if(!m.enrolled) bits.push('enrolling this caller');
+    else if(!m.accepted) bits.push('not the caller — no reply');
+  }
+  if(m.heard) bits.push(`“${m.heard.slice(0,72)}”`);
+  else if(!m.local && !m.speculative) bits.push('nothing recognisable in it');
+  txt.textContent=bits.join(' · ');
+  row.appendChild(txt);
+
+  inspRows.prepend(row);
+  while(inspRows.children.length>12) inspRows.lastChild.remove();
+}
+
+// ---------- AI orb: soft morphing gradient blob (Siri-style) + robot eyes ----------
+const cv=document.getElementById('viz'), ctx=cv.getContext('2d');
+const cvB=document.getElementById('vizBig'), ctxB=cvB.getContext('2d');
+const wave=document.getElementById('wave'), wctx=wave.getContext('2d');
+const caption=document.getElementById('caption');
+let vizLevel=0, rot=0, freq=new Uint8Array(128), _lvl=0, orbOn=true;
+// on phones the circle fills the screen (bigger circle, tighter rings)
+let orbBig=matchMedia('(max-width:760px)').matches;
+matchMedia('(max-width:760px)').addEventListener('change', e=>{ orbBig=e.matches; });
+// soft colour clouds that orbit & morph inside the blob
+const BLOBS=[
+  {c:'#38bdf8', r:0.60, sp:0.24, ph:0.0, orb:0.34},
+  {c:'#5aa9ff', r:0.64, sp:0.31, ph:1.7, orb:0.30},
+  {c:'#7c5cff', r:0.56, sp:0.19, ph:3.1, orb:0.40},
+  {c:'#d946ef', r:0.48, sp:0.28, ph:4.6, orb:0.34},
+  {c:'#22d3ee', r:0.50, sp:0.35, ph:5.5, orb:0.28},
+];
+
+// --- cursor + gaze state (robot eyes follow the pointer, else glance around) ---
+let mouseX=innerWidth/2, mouseY=innerHeight/2, lastMove=0;
+addEventListener('pointermove',e=>{ mouseX=e.clientX; mouseY=e.clientY; lastMove=Date.now(); });
+let autoGaze={x:0,y:0}, nextSaccade=0, eyeOpen=1, nextBlink=900, blinkT=0;
+// ---- facial expressions (robot eyes reshape per emotion) ----
+let expr='neutral', exprUntil=0;                            // exprUntil>now = a temporary/manual override
+const EXPR_CYCLE=['neutral','happy','angry','sad','surprised','sleepy'];
+function setExpr(e, ms){ expr=e; exprUntil = ms? Date.now()+ms : 0; }
+function stateExpr(){                                        // default emotion from the call state
+  if(state==='speaking') return 'happy';
+  if(state==='thinking') return 'sleepy';
+  return 'neutral';
+}
+function updateEyes(){
+  const now=Date.now();
+  if(exprUntil && now>exprUntil){ exprUntil=0; }            // manual hold expired → back to auto
+  if(!exprUntil) expr=stateExpr();                          // auto-drive emotion unless overridden
+  if(!blinkT && now>nextBlink) blinkT=now;                  // start a blink
+  if(blinkT){ const p=(now-blinkT)/140; if(p>=1){ blinkT=0; eyeOpen=1; nextBlink=now+1400+Math.random()*4200; }
+              else eyeOpen=1-Math.sin(Math.min(p,1)*Math.PI); }   // 1→0→1
+  if(now-lastMove>2200 && now>nextSaccade){                 // glance around when idle
+    const dir=Math.random()<0.5?-1:1;
+    autoGaze = Math.random()<0.25 ? {x:0,y:0}
+             : {x:dir*(0.4+Math.random()*0.5), y:(Math.random()-0.5)*0.5};
+    nextSaccade=now+600+Math.random()*2200;
+  }
+}
+function roundRect(c,x,y,w,h,r){ r=Math.min(r,Math.abs(w)/2,Math.abs(h)/2);
+  c.beginPath(); c.moveTo(x+r,y); c.arcTo(x+w,y,x+w,y+h,r); c.arcTo(x+w,y+h,x,y+h,r);
+  c.arcTo(x,y+h,x,y,r); c.arcTo(x,y,x+w,y,r); c.closePath(); }
+
+function orb(cv,ctx){
+  const W=cv.clientWidth||300, H=cv.clientHeight||W, dpr=window.devicePixelRatio||1;
+  if(cv.width!==Math.round(W*dpr)||cv.height!==Math.round(H*dpr)){ cv.width=Math.round(W*dpr); cv.height=Math.round(H*dpr); }
+  ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,W,H);
+  const s=Math.min(W,H);                     // circle sizes off the SMALLER side → never an egg
+  // "big" mode (mobile) → the circle fills far more of the canvas; rings/halo tighten so
+  // they still fit inside it (no hard clipping). Desktop keeps the roomy ringed look.
+  const big=orbBig, Rf=big?0.40:0.24, ringMax=big?1.22:2.13, haloMax=big?1.26:2.0;
+  const lvl=_lvl, cx=W/2, cy=H/2, R=s*Rf, t=Date.now()/1000;
+  const hue=262 + 40*Math.sin(t*0.18);     // slow colour-shift (blue ↔ magenta)
+  const rad=R*(1+lvl*0.05);
+
+  // 1) concentric sonar rings expanding outward (the background ripple effect)
+  for(let i=0;i<4;i++){
+    const ph=((t*0.3)+i/4)%1, rr=R*(1.02+ph*(ringMax-1.02));
+    ctx.strokeStyle=`hsla(${hue},80%,66%,${(1-ph)*0.16*(0.7+lvl)})`;
+    ctx.lineWidth=Math.max(1,R*(0.05*(1-ph)+0.01));
+    ctx.beginPath(); ctx.arc(cx,cy,rr,0,7); ctx.stroke();
+  }
+
+  // 2) soft coloured halo — this IS the glow (replaces expensive shadowBlur)
+  const halo=ctx.createRadialGradient(cx,cy,rad*0.6,cx,cy,R*haloMax);
+  halo.addColorStop(0,`hsla(${hue},92%,66%,${0.32+lvl*0.34})`); halo.addColorStop(1,`hsla(${hue},92%,66%,0)`);
+  ctx.fillStyle=halo; ctx.beginPath(); ctx.arc(cx,cy,R*haloMax,0,7); ctx.fill();
+
+  // 3) the circle — soft, BLURRED edge so it blends into the ambient glow (no outline)
+  const ang=t*0.15, gx0=Math.cos(ang), gy0=Math.sin(ang);
+  const g=ctx.createLinearGradient(cx-gx0*rad, cy-gy0*rad-rad*0.5, cx+gx0*rad, cy+gy0*rad+rad*0.5);
+  g.addColorStop(0,`hsl(${hue+26},95%,85%)`);      // light lavender-pink top
+  g.addColorStop(0.5,`hsl(${hue},80%,64%)`);
+  g.addColorStop(1,`hsl(${hue-20},74%,40%)`);      // deep indigo bottom
+  ctx.save();
+  ctx.filter=`blur(${Math.max(2,R*0.07)}px)`;      // feathered rim → blends, no hard edge
+  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(cx,cy,rad*0.95,0,7); ctx.fill();
+  ctx.restore();
+
+  // 4) soft top-left inner sheen (kept subtle, no hard rim)
+  ctx.save(); ctx.beginPath(); ctx.arc(cx,cy,rad*0.9,0,7); ctx.clip();
+  const sh=ctx.createRadialGradient(cx-rad*0.3,cy-rad*0.38,1,cx,cy,rad*1.05);
+  sh.addColorStop(0,'rgba(255,255,255,.32)'); sh.addColorStop(.6,'rgba(255,255,255,0)');
+  ctx.fillStyle=sh; ctx.fillRect(cx-rad,cy-rad,rad*2,rad*2); ctx.restore();
+
+  // 6) ROBOT eyes with EXPRESSIONS (blink + follow cursor + emotion). Cached rect → no layout.
+  const rect=orbRect(cv);
+  const ecx=rect.left+rect.width/2, ecy=rect.top+rect.height*0.46;
+  let tx,ty;
+  if(Date.now()-lastMove<2200){
+    const dx=mouseX-ecx, dy=mouseY-ecy, d=Math.hypot(dx,dy)||1, m=Math.min(1,d/(rect.width*0.55));
+    tx=dx/d*m; ty=dy/d*m;
+  } else { tx=autoGaze.x; ty=autoGaze.y; }
+  // ease toward the target expression so emotions morph smoothly
+  const E=EXPR[expr]||EXPR.neutral;
+  cv._e=cv._e||{w:1,h:1,rot:0,dy:0};
+  for(const k of ['w','h','rot','dy']) cv._e[k]+=((E[k]||0)-cv._e[k])*0.2;
+  const e=cv._e;
+  cv._gx=(cv._gx||0)+(tx-(cv._gx||0))*0.16; cv._gy=(cv._gy||0)+(ty-(cv._gy||0))*0.16;
+  const ew=R*0.24*e.w, eh=R*0.4*e.h, eyeDX=R*0.3, eyeY=cy-R*0.06+R*e.dy;
+  const gx=cv._gx*R*0.12, gy=cv._gy*R*0.12, open=Math.max(0.08,eyeOpen);
+  for(const sgn of [-1,1]){
+    const ex=cx+sgn*eyeDX+gx, y=eyeY+gy, rot=sgn*e.rot, h=eh*open, r=Math.min(ew,h)*0.46;
+    ctx.save(); ctx.translate(ex,y); ctx.rotate(rot);
+    // plain white rounded-rectangle eye — no outline / box
+    ctx.fillStyle='#ffffff'; roundRect(ctx, -ew/2, -h/2, ew, h, r); ctx.fill();
+    ctx.restore();
+  }
+}
+// expression params: w/h = eye scale, rot = inner-tilt (×sgn), dy = vertical shift. Eyes stay normal dots.
+const EXPR={
+  neutral:  {w:1,   h:1,    rot:0,    dy:0},
+  happy:    {w:1.05,h:0.62, rot:0,    dy:-0.02},   // gentle content squint
+  angry:    {w:1.05,h:0.72, rot:0.5,  dy:0.02},    // \  / inner-down glare
+  sad:      {w:0.95,h:0.7,  rot:-0.42,dy:0.06},    // ╱  ╲ inner-up, looking down
+  surprised:{w:1.2, h:1.25, rot:0,    dy:0},       // wide round eyes
+  sleepy:   {w:1.1, h:0.4,  rot:0.12, dy:0.05},    // half-closed (thinking)
+};
+// cache each canvas's on-screen rect (getBoundingClientRect forces layout → don't call it per frame)
+function orbRect(cv){ const now=Date.now(); if(!cv._rect||now-cv._rectT>500){ cv._rect=cv.getBoundingClientRect(); cv._rectT=now; } return cv._rect; }
+
+// ---- live waveform bars (the "voice note" / exact audio level) ----
+function drawWave(A){
+  const s=wave.clientWidth||280, h=wave.clientHeight||44, dpr=window.devicePixelRatio||1;
+  if(wave.width!==Math.round(s*dpr)||wave.height!==Math.round(h*dpr)){ wave.width=Math.round(s*dpr); wave.height=Math.round(h*dpr); }
+  wctx.setTransform(dpr,0,0,dpr,0,0); wctx.clearRect(0,0,s,h);
+  const bars=34, bw=s/bars, step=Math.max(1,Math.floor(freq.length*0.7/bars)), mid=h/2, t=Date.now()/1000;
+  const dark=document.documentElement.getAttribute('data-theme')!=='light';   // stage is dark on mobile
+  wctx.fillStyle = dark ? '#e9ebf0' : '#20242c';        // monochrome — no colour
+  for(let i=0;i<bars;i++){
+    let v=A?Math.pow(freq[i*step]/255,0.85):0;
+    // gentle travelling ripple so the bar always looks alive; taller toward the centre
+    const env=0.35+0.65*Math.sin(i/bars*Math.PI);
+    v=Math.max(v, (0.1+0.13*Math.sin(t*3 - i*0.45))*env);
+    const bh=Math.max(3, v*h*0.9), x=i*bw+bw*0.24, y=mid-bh/2;     // mirrored around centre
+    wctx.globalAlpha=0.35+v*0.6;
+    roundRect(wctx, x, y, bw*0.52, bh, bw*0.26); wctx.fill();
+  }
+  wctx.globalAlpha=1;
+}
+
+// ---- live transcription caption under the orb ----
+function escapeHtml(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+// ---- lightweight, safe Markdown → HTML (tables, lists, code, bold/italic/links) ----
+function mdInline(s){                                   // s is already HTML-escaped
+  return s
+    .replace(/`([^`]+)`/g,'<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*\s][^*]*?)\*/g,'$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
+}
+function renderMarkdown(md){
+  const L=escapeHtml(md).split(/\r?\n/); let out='', i=0;
+  const sepRe=/^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/;
+  const row=r=>r.replace(/^\s*\|/,'').replace(/\|\s*$/,'').split('|').map(c=>c.trim());
+  while(i<L.length){
+    const line=L[i];
+    if(/^```/.test(line)){ i++; const c=[]; while(i<L.length&&!/^```/.test(L[i])){c.push(L[i]);i++;} i++; out+='<pre><code>'+c.join('\n')+'</code></pre>'; continue; }
+    if(/\|/.test(line) && i+1<L.length && sepRe.test(L[i+1])){        // table
+      const head=row(line); i+=2; const rows=[];
+      while(i<L.length && /\|/.test(L[i]) && L[i].trim()){ rows.push(row(L[i])); i++; }
+      out+='<table><thead><tr>'+head.map(h=>'<th>'+mdInline(h)+'</th>').join('')+'</tr></thead><tbody>'
+         +rows.map(r=>'<tr>'+r.map(c=>'<td>'+mdInline(c)+'</td>').join('')+'</tr>').join('')+'</tbody></table>'; continue;
+    }
+    const hm=line.match(/^(#{1,4})\s+(.*)$/);
+    if(hm){ out+='<h'+Math.min(6,hm[1].length+2)+'>'+mdInline(hm[2])+'</h'+Math.min(6,hm[1].length+2)+'>'; i++; continue; }
+    if(/^\s*[-*]\s+/.test(line)){ const it=[]; while(i<L.length&&/^\s*[-*]\s+/.test(L[i])){ it.push('<li>'+mdInline(L[i].replace(/^\s*[-*]\s+/,''))+'</li>'); i++; } out+='<ul>'+it.join('')+'</ul>'; continue; }
+    if(/^\s*\d+\.\s+/.test(line)){ const it=[]; while(i<L.length&&/^\s*\d+\.\s+/.test(L[i])){ it.push('<li>'+mdInline(L[i].replace(/^\s*\d+\.\s+/,''))+'</li>'); i++; } out+='<ol>'+it.join('')+'</ol>'; continue; }
+    if(!line.trim()){ i++; continue; }
+    const p=[line]; i++;
+    while(i<L.length && L[i].trim() && !/^```|^\s*[-*]\s+|^\s*\d+\.\s+|^#{1,4}\s|\|/.test(L[i])){ p.push(L[i]); i++; }
+    out+='<p>'+mdInline(p.join(' '))+'</p>';
+  }
+  return out;
+}
+function renderBot(bubble, md){ if(!bubble) return; bubble.innerHTML=renderMarkdown(md); scrollDown(); }
+let capAI='';
+function setCaption(text, who){
+  if(!text){ caption.hidden=true; caption.textContent=''; return; }
+  caption.hidden=false; caption.className='caption '+(who||'');
+  caption.innerHTML='<span class="who">'+(who==='you'?'You':'AI')+'</span>'+escapeHtml(text);
+}
+// react to the turn's outcome with an emotion: escalation → angry, booking → happy
+function moodFromOutcome(m){
+  const a=m.action||{};
+  if(m.escalated) setExpr('angry', 3500);
+  else if(a.booking_id) setExpr('happy', 3500);
+}
+
+let _lastFrame=0;
+function draw(ts){
+  requestAnimationFrame(draw);
+  if(ts && ts-_lastFrame<32) return;      // cap ~30fps (animation is time-based, so speed is unchanged)
+  _lastFrame=ts||0;
+  updateEyes();
+  const A=(callActive && !agentPlaying && micAnalyser)?micAnalyser:analyser;
+  let level=0;
+  if(A){ A.getByteFrequencyData(freq); let sum=0; for(let i=0;i<freq.length;i++)sum+=freq[i]; level=(sum/freq.length)/255; }
+  vizLevel += (level-vizLevel)*0.22;
+  const active=(state==='speaking'||state==='user'||state==='listening');
+  const idle=active?0:(0.12+0.05*Math.sin(Date.now()/900));
+  _lvl=Math.max(vizLevel, idle);
+  if(orbOn && !fsOpen) orb(cv,ctx);
+  if(fsOpen) orb(cvB,ctxB);
+  drawWave(A);
+}
+requestAnimationFrame(draw);
+
+// click the orb to cycle its mood (holds ~4s, then returns to the call-state emotion)
+function cycleMood(){
+  const i=(EXPR_CYCLE.indexOf(exprUntil?expr:'neutral')+1)%EXPR_CYCLE.length;
+  setExpr(EXPR_CYCLE[i], 4000);
+  orbLabel.textContent=EXPR_CYCLE[i].toUpperCase(); fsLabel.textContent=EXPR_CYCLE[i].toUpperCase();
+}
+cv.style.cursor='pointer'; cv.title='Click to change my mood';
+cv.addEventListener('click', cycleMood);
+cvB.addEventListener('click', cycleMood);
+
+// enable / disable the centre AI orb (collapses to a 2-column layout)
+const orbToggle=document.getElementById('orbToggle');
+orbToggle.onclick=()=>{
+  orbOn=!orbOn; orbToggle.classList.toggle('on',orbOn);
+  document.getElementById('app').classList.toggle('no-orb',!orbOn);
+  if(!orbOn && fsOpen) closeFS();
+};
+
+// dark / light theme toggle (persisted; initial theme was set pre-paint in <head>)
+const ICON_SUN='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
+const ICON_MOON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg>';
+const themeBtn=document.getElementById('themeBtn');
+const mTheme=document.getElementById('mTheme');
+function applyTheme(t){ document.documentElement.setAttribute('data-theme',t);
+  const ico=t==='dark'?ICON_SUN:ICON_MOON; themeBtn.innerHTML=ico; if(mTheme) mTheme.innerHTML=ico;
+  try{ localStorage.setItem('zs-theme',t); }catch(_){} }
+applyTheme(document.documentElement.getAttribute('data-theme')||'light');
+const toggleTheme=()=> applyTheme(document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark');
+themeBtn.onclick=toggleTheme; if(mTheme) mTheme.onclick=toggleTheme;
+
+// ---- mobile drawers: ☰ = settings (left), 💬 = conversation (bottom sheet) ----
+const scrim=document.getElementById('scrim'), sidePanel=document.querySelector('.side'),
+      convoPanel=document.querySelector('.convo'), mMenu=document.getElementById('mMenu'),
+      sideChat=document.getElementById('sideChat');
+function closeDrawer(){ sidePanel.classList.remove('open'); convoPanel.classList.remove('open'); scrim.classList.remove('on'); }
+function openSettings(){ closeDrawer(); sidePanel.classList.add('open'); scrim.classList.add('on'); }
+function openChat(){ closeDrawer(); convoPanel.classList.add('open'); scrim.classList.add('on'); scrollDown(); }
+if(mMenu) mMenu.onclick=openSettings;
+if(sideChat) sideChat.onclick=openChat;   // "View conversation" inside the menu → opens chat sheet
+if(scrim) scrim.onclick=closeDrawer;
+// picking a setting closes the drawer so the maximized mascot is visible again
+sidePanel.addEventListener('change', ()=>{ if(matchMedia('(max-width:760px)').matches) closeDrawer(); });
+// floating call button on the mascot (mobile)
+const mCall=document.getElementById('mCall');
+if(mCall) mCall.onclick=()=> callActive?endCall():startCall();
+
+// ---------- pixel-art brand mascot (original art; role-aware props) ----------
+const MASCOT_ROWS=[
+"                ","                ","                ","                ",
+"    ........    ",   // 4  body top
+"   ..........   ",   // 5
+"   .::::::::.   ",   // 6  face
+"   .:oo::oo:.   ",   // 7  eyes
+"   .:o##o::.    ",   // 8  pupils (overwritten below for symmetry)
+"   .::::::::.   ",   // 9
+"   .:::--:::.   ",   // 10 mouth
+"   ==========   ",   // 11 lower body (shade)
+"    ========    ",   // 12
+"                ","                ","                ",
+];
+const MC={'.':'#7c6cf5',':':'#b4a9ff','=':'#5f50db','o':'#ffffff','#':'#2a2350','-':'#4a3f8f'};
+function mascotRoleFor(pack){
+  if(!pack) return 'none';
+  const p=String(pack).toLowerCase();
+  const map={clinic:'doctor',restaurant:'chef',salon:'bow',laundry:'tie',gym:'headband',hotel:'bellhop',
+             lawyer:'glasses',legal:'glasses',bookstore:'grad',library:'grad',school:'grad',cafe:'chef',construction:'hardhat'};
+  if(map[p]) return map[p];
+  if(/clinic|doctor|dental|hospital|med|health/.test(p)) return 'doctor';
+  if(/rest|food|cafe|kitchen|dhaba|bakery/.test(p))     return 'chef';
+  if(/law|legal|advocate|court/.test(p))                return 'glasses';
+  if(/book|librar|edu|school|academy/.test(p))          return 'grad';
+  if(/gym|fitness|yoga|sport/.test(p))                  return 'headband';
+  if(/salon|beauty|spa|hair|nail/.test(p))              return 'bow';
+  if(/laundr|dry.?clean|tailor|cloth/.test(p))          return 'tie';
+  if(/hotel|resort|stay|lodge|inn/.test(p))             return 'bellhop';
+  if(/construc|build|contractor|hardware/.test(p))      return 'hardhat';
+  return 'none';
+}
+function mascotProp(P, role, f){
+  const WHT='#fff', RED='#ff5a6a', YEL='#f2c218', DARK='#23252b', PINK='#ff79b0',
+        TIE='#4b7bec', GOLD='#f4c542', MAROON='#c0392b';
+  if(role==='chef'){ P(4,3,WHT,8,1); P(5,2,WHT,6,1); P(6,1,WHT,4,1); }
+  else if(role==='doctor'){ P(7,1,RED,2,3); P(6,2,RED,4,1); }               // health cross above head
+  else if(role==='grad'){ P(4,2,DARK,8,1); P(6,3,'#33363d',4,1); P(11,2,GOLD,1,3); }
+  else if(role==='hardhat'){ P(4,3,YEL,8,1); P(5,2,YEL,6,1); P(6,1,YEL,4,1); P(4,3,'#caa20f',8,1) }
+  else if(role==='headband'){ P(3,6,RED,10,1); P(3,6,WHT,10,0); P(2,6,RED,1,2); }
+  else if(role==='bellhop'){ P(5,2,MAROON,6,1); P(5,3,'#1a1a1a',6,1); P(7,2,GOLD,2,1); }
+  else if(role==='bow'){ P(5,2,PINK,2,2); P(9,2,PINK,2,2); P(7,2,'#e84c93',2,2); }
+  else if(role==='tie'){ P(7,11,TIE,2,1); P(7,12,TIE,2,2); }
+  else if(role==='glasses'){ P(4,7,DARK,3,1); P(4,8,DARK,3,1); P(9,7,DARK,3,1); P(9,8,DARK,3,1); P(7,7,DARK,2,1); }
+}
+const mlogo=document.getElementById('mlogo');
+let mframe=0;
+function drawMascot(cv, role, f){
+  if(!cv) return;
+  const ctx=cv.getContext('2d'), dpr=window.devicePixelRatio||1, css=cv.clientWidth||52;
+  const back=Math.round(css*dpr);
+  if(cv.width!==back){ cv.width=cv.height=back; }
+  const G=16, px=Math.floor(back/G), ox=Math.floor((back-px*G)/2), oy=ox;
+  ctx.clearRect(0,0,back,back); ctx.imageSmoothingEnabled=false;
+  const P=(gx,gy,c,w=1,h=1)=>{ ctx.fillStyle=c; ctx.fillRect(ox+gx*px,oy+gy*px,w*px,h*px); };
+  // base body
+  for(let y=0;y<MASCOT_ROWS.length;y++){ const row=MASCOT_ROWS[y];
+    for(let x=0;x<row.length;x++){ const c=MC[row[x]]; if(c) P(x,y,c); } }
+  // symmetric pupils + occasional blink
+  const blink=(f%42)<2;
+  if(blink){ P(5,7,MC[':'],2,2); P(9,7,MC[':'],2,2); P(5,8,MC['#'],2,1); P(9,8,MC['#'],2,1); }
+  else { P(6,8,MC['#']); P(9,8,MC['#']); }              // even pupils
+  // little wiggling legs
+  const lx=[4,6,9,11]; lx.forEach((x,i)=>{ P(x,13+((i+(f>>2))%2), MC['='],1,2); });
+  // role prop
+  mascotProp(P, role, f);
+}
+function tickMascot(){ mframe++; drawMascot(mlogo, mascotRoleFor(currentPack), mframe); }
+setInterval(tickMascot, 160); tickMascot();
+
+// ---------- websocket ----------
+let _reconnectTimer=null, _reconnectDelay=800, _wantConnected=false, _skipGreetingAudio=false, _sid=null;
+// What the SERVER did, not what we asked for. A reconnect after a server restart
+// gets a brand-new call, and its greeting must be spoken.
+let _serverResumed=false;
+function connect(pack, isReconnect){
+  currentPack=pack; _wantConnected=true;
+  if(_reconnectTimer){ clearTimeout(_reconnectTimer); _reconnectTimer=null; }
+  if(ws){ ws.onclose=null; ws.onerror=null; try{ws.close();}catch(_){} }
+  if(!isReconnect){ chat.innerHTML=''; _sid=null; }   // fresh call clears history + session id
+  _skipGreetingAudio = !!isReconnect;                 // don't RE-speak the greeting after a blip
+  _serverResumed = false;
+  stopAgentAudio(); botBubble=null; barged=false;
+  const proto=location.protocol==='https:'?'wss':'ws';
+  let url=`${proto}://${location.host}/ws?pack=${encodeURIComponent(pack)}`;
+  if(_sid) url+=`&sid=${encodeURIComponent(_sid)}`;   // resume the SAME server session on reconnect
+  ws=new WebSocket(url);
+  ws.binaryType='arraybuffer';                        // audio arrives as binary frames
+  ws.onopen=()=>{ _reconnectDelay=800; statusDot.classList.add('on'); statusText.textContent='ready · '+pack; };
+  // settings are applied on the 'session' message (only for a NEW session — a resumed one
+  // already has the caller's language/model/voice, and re-sending would reset the latch).
+  const scheduleReconnect=()=>{
+    if(!_wantConnected || _reconnectTimer) return;
+    statusDot.classList.remove('on'); statusText.textContent='reconnecting…';
+    _reconnectTimer=setTimeout(()=>{ _reconnectTimer=null; connect(currentPack, true); }, _reconnectDelay);
+    _reconnectDelay=Math.min(_reconnectDelay*1.7, 8000);   // exponential backoff, cap 8s
+  };
+  ws.onerror=()=>{ try{ws.close();}catch(_){} };
+  ws.onclose=()=>{ scheduleReconnect(); };
+  ws.onmessage=(ev)=>{
+    let m, audioBuf=null;
+    if(typeof ev.data==='string'){ m=JSON.parse(ev.data); }
+    else{                                             // binary frame: [4B len][JSON meta][WAV]
+      const dv=new DataView(ev.data), hlen=dv.getUint32(0);
+      m=JSON.parse(new TextDecoder().decode(new Uint8Array(ev.data,4,hlen)));
+      audioBuf = ev.data.byteLength>4+hlen ? ev.data.slice(4+hlen) : null;
+    }
+    switch(m.type){
+      case 'session':
+        _sid = m.sid;                              // remember so a reconnect resumes this call
+        _serverResumed = !!m.resumed;              // did it actually resume, or start over?
+        // The DeepFilter toggle is only usable when the binary has been downloaded
+        // (scripts/download_deepfilter.sh); otherwise it stays greyed out.
+        if(isoBtn){
+          isoBtn.disabled = !m.isolate_available;
+          isoBtn.title = m.isolate_available
+            ? 'Split the turn by speaker and transcribe only YOUR voice. Rescues turns a colleague talking in a gap would otherwise discard.'
+            : 'Not installed — run: bash scripts/download_diarize.sh, and set stt.speaker_gate: true';
+          if(!m.isolate_available){ isoMode='off'; isoOn=false; }
+          paintMode(isoBtn, m.isolate_available?isoMode:'off', '🗣 Voice Isolation');
+        }
+        if(dfBtn){
+          dfBtn.disabled = !m.denoise_available;
+          dfBtn.title = m.denoise_available
+            ? 'Run DeepFilterNet before transcription. Measured to make transcription WORSE (WER 0.10 vs 0.00) — turn on to hear it yourself.'
+            : 'Not installed — run: bash scripts/download_deepfilter.sh';
+          if(!m.denoise_available){ dfMode='off'; dfOn=false; }
+          paintMode(dfBtn, m.denoise_available?dfMode:'off', '🎛 DeepFilter');
+        }
+        if(!m.resumed){                            // NEW session → apply the caller's settings once
+          if(langSel.value) ws.send(JSON.stringify({type:'lang', lang:langSel.value}));
+          if(typeof modelSel!=='undefined' && modelSel.value) ws.send(JSON.stringify({type:'model', model:modelSel.value}));
+          if(sttFast) ws.send(JSON.stringify({type:'stt_mode', mode:'fast'}));
+          ws.send(JSON.stringify({type:'denoise_mode', on: dfMode==='auto'?null:dfMode==='on'}));
+          ws.send(JSON.stringify({type:'isolate_mode', on: isoMode==='auto'?null:isoMode==='on'}));
+        }
+        break;
+      case 'error': statusText.textContent='error'; addMsg('bot','⚠ '+m.error); break;
+      case 'voiceinfo': if(m.loading) statusText.textContent='loading AI4Bharat voice…'; break;
+      case 'voice_sample': enqueueAudioBuf(audioBuf); break;
+      case 'greeting':
+        // Only skip when the SERVER says it resumed the same call. Keyed on our own
+        // isReconnect flag, a reconnect after a server RESTART (no session to resume)
+        // silently swallowed the fresh greeting: the caller saw a connected UI and heard
+        // nothing, with no way to tell the call had actually started over.
+        if(_skipGreetingAudio && _serverResumed){ _skipGreetingAudio=false; break; }
+        _skipGreetingAudio=false;
+        addMsg('bot', m.text); setCaption(m.text,'ai'); enqueueAudioBuf(audioBuf); break;
+      case 'reply_start':
+        // The commit was honoured — release the copy we were holding as a fallback.
+        pendingPCM=null; clearTimeout(commitTimer); commitTimer=null;
+        // A previous bubble that never received any text is orphaned the moment we
+        // reassign botBubble below, and an empty "Assistant" row left in the transcript
+        // reads as the agent having silently failed. Observed live: one appeared after
+        // the caller's first turn when a second turn started before the first finished.
+        dropIfEmpty(botBubble);
+        barged=false; capAI='';
+        if(m.heard){ addMsg('user', m.heard, 'You'); setCaption(m.heard,'you'); }
+        botBubble=newRow('bot','Assistant');
+        break;
+      case 'audio_insight':
+        addInsight(m);
+        break;
+      case 'turn_dropped':
+        // The server will not answer that recording. Hand the microphone back
+        // instead of leaving the caller on a spinner that never resolves.
+        pendingPCM=null; clearTimeout(commitTimer); commitTimer=null;
+        specSent=false; specWords=false;
+        if(state==='thinking') setState(callActive?(micMode==='auto'?'listening':'idle'):'idle');
+        break;
+      case 'commit_miss':
+        // The guess was empty, so the server has nothing to answer. It still has our
+        // recording waiting on this side — send it rather than losing the turn.
+        sendPending();
+        break;
+      case 'partial':
+        // Speculative transcript: show what we think we heard, commit nothing. The
+        // server holds it until the endpoint confirms the caller had really finished.
+        if(m.text){ setCaption(m.text,'you'); specWords=true; }
+        // It also tells us whether those words sound finished. If not, keep listening —
+        // this is the only signal that can distinguish "done" from "still thinking".
+        // Set AND clear. It only ever latched on before, so one mid-sentence guess added
+        // HOLD_EXTRA_MS to every remaining endpoint of the call — the caller waited nearly
+        // a second longer for every later answer, including single-word ones.
+        if(vad==='speech'){
+          const wasHeld=holdForMore;
+          holdForMore = (m.complete===false);
+          if(holdForMore && !wasHeld)
+            console.log('[vad] transcript sounds unfinished → waiting '+(endpointMs()|0)+'ms');
+        }
+        break;
+      case 'pcm':
+        // A sentence arriving as it renders. Only the first frame carries the text.
+        if(barged) return;
+        if(m.start && m.text){
+          if(!botBubble) botBubble=newRow('bot','Assistant');
+          botBubble.textContent += (botBubble.textContent?' ':'')+m.text; scrollDown();
+          capAI += (capAI?' ':'')+m.text; setCaption(capAI,'ai');
+        }
+        enqueuePCM(audioBuf, m.sr);
+        break;
+      case 'chunk':
+        if(barged) return;
+        if(m.filler){ enqueueAudioBuf(audioBuf); break; }   // spoken filler — no bubble text
+        if(!botBubble) botBubble=newRow('bot','Assistant');
+        botBubble.textContent += (botBubble.textContent?' ':'')+m.text; scrollDown();
+        capAI += (capAI?' ':'')+m.text; setCaption(capAI,'ai');   // live transcription under orb
+        enqueueAudioBuf(audioBuf);
+        break;
+      case 'reply_end':
+        if(barged){ dropIfEmpty(botBubble); botBubble=null; return; }
+        if(botBubble){ renderBot(botBubble, m.text); setBadge(botBubble,m); addMeta(botBubble,m.timings);
+                       if(m.mute_reason==='no_voice_for_script') noteMuted(botBubble);
+                       dropIfEmpty(botBubble); }
+        moodFromOutcome(m); botBubble=null;
+        break;
+      case 'reply':
+        if(m.heard) addMsg('user', m.heard, 'You');
+        { const b=newRow('bot','Assistant'); renderBot(b, m.text); setBadge(b,m); addMeta(b,m.timings); }
+        setCaption(m.text,'ai'); moodFromOutcome(m); enqueueAudioBuf(audioBuf);
+        break;
+    }
+  };
+}
+
+function sendText(){
+  const t=textInput.value.trim(); if(!t||!ws||ws.readyState!==1) return;
+  if(agentPlaying){ stopAgentAudio(); try{ws.send(JSON.stringify({type:'cancel'}));}catch(_){}; barged=true; dropIfEmpty(botBubble); }
+  addMsg('user', t); ws.send(JSON.stringify({type:'text', text:t})); textInput.value=''; setState(callActive?'thinking':'thinking');
+}
+document.getElementById('send').onclick=sendText;
+textInput.addEventListener('keydown',e=>{ if(e.key==='Enter') sendText(); });
+
+// ---------- controls ----------
+startBtn.onclick=startCall;
+endBtn.onclick=endCall;
+clearBtn.onclick=()=>{ endCall(); connect(currentPack); };
+
+// fullscreen voice mode — enlarge / reduce
+expandBtn.onclick=openFS;
+fsMin.onclick=closeFS;
+fsCall.onclick=()=> callActive?endCall():startCall();
+
+// mode toggle: Auto (hands-free VAD) ↔ Hold Space (push-to-talk) — synced across both views
+function setMode(m){
+  micMode=m; pttHeld=false; vad='silence';
+  document.querySelectorAll('.mode[data-m]').forEach(x=> x.classList.toggle('on', x.dataset.m===m));
+  if(callActive) setState(micMode==='auto'?'listening':'idle');
+  setHint();
+}
+document.querySelectorAll('.mode[data-m]').forEach(b=> b.onclick=()=> setMode(b.dataset.m));
+const isoBtn=document.getElementById('isoBtn');
+// Three states, not two. AUTO is the default and the right answer almost always:
+// isolation runs whenever there is a voiceprint and a second voice to remove, and
+// costs nothing on the single-speaker turns that make up most of a call. ON and OFF
+// exist to A/B it by ear.
+isoBtn.onclick=()=>{
+  isoMode = isoMode==='auto' ? 'on' : (isoMode==='on' ? 'off' : 'auto');
+  isoOn = isoMode!=='off';
+  paintMode(isoBtn, isoMode, '🗣 Voice Isolation');
+  if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'isolate_mode',
+                                                    on: isoMode==='auto'?null:isoMode==='on'}));
+  setCaption(isoMode==='auto' ? 'Voice isolation AUTO — engages when a second voice is present'
+           : isoMode==='on' ? 'Voice isolation ON — only your voice is transcribed'
+                   : 'Voice isolation off — the whole turn is transcribed (default)', 'ai');
+  syncInspector();
+};
+const dfBtn=document.getElementById('dfBtn');
+// AUTO measures the room's floor-to-voice gap on every turn and only pays the ~500ms
+// when it is under 10dB. Forcing it ON denoises a clean recording too, which was
+// measured to RAISE word-error rate — useful for comparison, wrong as a default.
+dfBtn.onclick=()=>{
+  dfMode = dfMode==='auto' ? 'on' : (dfMode==='on' ? 'off' : 'auto');
+  dfOn = dfMode!=='off';
+  paintMode(dfBtn, dfMode, '🎛 DeepFilter');
+  if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'denoise_mode',
+                                                    on: dfMode==='auto'?null:dfMode==='on'}));
+  setCaption(dfMode==='auto' ? 'DeepFilter AUTO — engages only when the room is noisy'
+           : dfMode==='on' ? 'DeepFilter ON — audio is denoised before transcription'
+                  : 'DeepFilter off — Whisper receives raw audio (default)', 'ai');
+  syncInspector();
+};
+const sttFastBtn=document.getElementById('sttFastBtn');
+sttFastBtn.onclick=()=>{
+  sttFast=!sttFast; sttFastBtn.classList.toggle('on', sttFast);
+  if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'stt_mode', mode: sttFast?'fast':'accurate'}));
+};
+document.addEventListener('keydown', e=>{ if(e.key==='Escape' && fsOpen) closeFS(); });
+syncControls(); setHint();
+
+// ---- Brand voice: record ~10s → clone → use as the agent's voice ----
+const recVoice=document.getElementById('recVoice'), bvHint=document.getElementById('bvHint');
+let recStop=null, recActive=false;
+async function recordClip(maxSec){
+  ensureCtx();
+  const stream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true}});
+  const src=audioCtx.createMediaStreamSource(stream); const proc=audioCtx.createScriptProcessor(4096,1,1);
+  const parts=[]; let stopped=false;
+  proc.onaudioprocess=e=>{ if(!stopped) parts.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+  src.connect(proc); proc.connect(silentGain);
+  await new Promise(res=>{ recStop=()=>{ if(!stopped){stopped=true;res();} }; setTimeout(()=>recStop&&recStop(), maxSec*1000); });
+  try{ proc.disconnect(); src.disconnect(); }catch(_){}
+  stream.getTracks().forEach(t=>t.stop());
+  return floatToWav(parts, audioCtx.sampleRate);   // FULL quality (server denoises + trims)
+}
+// full-quality WAV (native sample rate) — used for the clone reference
+function floatToWav(chunks, sr){
+  let total=0; chunks.forEach(c=>total+=c.length);
+  const data=new Float32Array(total); let off=0; chunks.forEach(c=>{data.set(c,off);off+=c.length;});
+  const buf=new ArrayBuffer(44+data.length*2), v=new DataView(buf);
+  const w=(o,s)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));};
+  w(0,'RIFF');v.setUint32(4,36+data.length*2,true);w(8,'WAVE');w(12,'fmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
+  v.setUint32(24,sr,true);v.setUint32(28,sr*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);w(36,'data');v.setUint32(40,data.length*2,true);
+  let o=44; for(let i=0;i<data.length;i++){let s=Math.max(-1,Math.min(1,data[i]));v.setInt16(o,s<0?s*0x8000:s*0x7FFF,true);o+=2;}
+  return {blob:new Blob([v],{type:'audio/wav'}), seconds:data.length/sr};
+}
+recVoice.onclick=async ()=>{
+  if(recActive){ recStop&&recStop(); return; }
+  recActive=true; recVoice.classList.add('rec'); recVoice.textContent='● Recording… (click to stop)';
+  bvHint.textContent='Speak clearly for about 15 seconds, in a quiet place…';
+  let clip; try{ clip=await recordClip(15); }
+  catch(e){ alert('Microphone error: '+e.message); recActive=false; recVoice.classList.remove('rec'); recVoice.textContent='● Record my voice (15s)'; return; }
+  recActive=false; recVoice.classList.remove('rec');
+  if(clip.seconds<3){ recVoice.textContent='● Record my voice (15s)'; bvHint.textContent='Too short — please record 10–15 seconds of steady speech.'; return; }
+  recVoice.disabled=true; recVoice.textContent='Cloning… (up to a minute on CPU)'; bvHint.textContent='Cloning your voice — the first time also loads the model, so please wait.';
+  try{
+    const res=await fetch('/voice/clone',{method:'POST',headers:{'Content-Type':'audio/wav'},body:clip.blob});
+    const j=await res.json();
+    if(j.ok){
+      if(!document.querySelector('#voice option[value="__brand__"]')){
+        const o=document.createElement('option'); o.value='__brand__'; o.textContent='★ My Brand Voice';
+        voiceSel.parentNode.style.display=''; voiceSel.insertBefore(o, voiceSel.children[1]||null);
+      }
+      voiceSel.value='__brand__'; if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'voice',voice:'__brand__'}));
+      enqueueAudio(j.audio);
+      bvHint.innerHTML='✓ Brand voice ready — the agent now speaks in <b>your</b> voice.';
+      recVoice.textContent='● Re-record my voice';
+    } else { bvHint.textContent='✗ '+(j.error||'Cloning failed.'); recVoice.textContent='● Record my voice (15s)'; }
+  }catch(e){ bvHint.textContent='✗ '+e.message; recVoice.textContent='● Record my voice (15s)'; }
+  recVoice.disabled=false;
+};
+
+// Spacebar push-to-talk (only in ptt mode, when not typing)
+document.addEventListener('keydown', e=>{
+  if(e.code==='Space' && micMode==='ptt' && callActive && !pttHeld && document.activeElement!==textInput){
+    e.preventDefault(); pttHeld=true; uttPCM=[]; bargeIn(); setState('user');
+  }
+});
+document.addEventListener('keyup', e=>{
+  if(e.code==='Space' && pttHeld){ e.preventDefault(); pttHeld=false; endUtterance(); }
+});
+packSel.addEventListener('change',()=>{ voiceSel.value=''; endCall(); connect(packSel.value); });
+voiceSel.addEventListener('change',()=>{ if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'voice', voice:voiceSel.value||null})); });
+langSel.addEventListener('change',()=>{ if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'lang', lang:langSel.value||null})); });
+document.body.addEventListener('click',()=>{ if(audioCtx&&audioCtx.state==='suspended') audioCtx.resume(); }, {once:true});
+
+// ---------- boot ----------
+// Model (speed) picker — smaller = faster inference on CPU
+const modelSel=document.getElementById('model');
+const MODEL_HINT={'qwen3:4b':'best · multilingual','qwen2.5:3b':'faster · English-only','qwen3:1.7b':'fast','qwen3:0.6b':'fastest','qwen2.5:1.5b':'fastest · English'};
+fetch('/health').then(r=>r.json()).then(d=>{
+  const models=(d.models&&d.models.length)?d.models:[d.model];
+  models.forEach(m=>{ const o=document.createElement('option'); o.value=m;
+    o.textContent=MODEL_HINT[m]?`${m} · ${MODEL_HINT[m]}`:m; modelSel.appendChild(o); });
+  modelSel.value=d.model||models[0];
+}).catch(()=>{});
+modelSel.addEventListener('change',()=>{ if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'model', model:modelSel.value})); });
+fetch('/packs').then(r=>r.json()).then(d=>{
+  d.packs.forEach(p=>{ const o=document.createElement('option'); o.value=p; o.textContent=p.charAt(0).toUpperCase()+p.slice(1); packSel.appendChild(o); });
+  packSel.value=d.default||d.packs[0]; connect(packSel.value);
+});
+// AI4Bharat Indic-Parler recommended voices (needs a free Hugging Face login — see SETUP.md)
+const AI4BHARAT=[["Hindi","Divya"],["Hindi","Rohit"],["English","Mary"],["English","Thoma"],
+  ["Tamil","Jaya"],["Telugu","Lalitha"],["Telugu","Prakash"],["Bengali","Aditi"],["Bengali","Arjun"],
+  ["Marathi","Sunita"],["Marathi","Sanjay"],["Gujarati","Neha"],["Gujarati","Yash"],
+  ["Kannada","Anu"],["Kannada","Suresh"],["Malayalam","Anjali"],["Malayalam","Harish"],
+  ["Odia","Debjani"],["Odia","Manas"],["Assamese","Sita"],["Assamese","Amit"]];
+function addAI4Bharat(){
+  const g=document.createElement('optgroup'); g.label='AI4Bharat · Indian voices (HF login)';
+  AI4BHARAT.forEach(([lang,sp])=>{ const o=document.createElement('option'); o.value=`parler:${lang}:${sp}`; o.textContent=`${lang} · ${sp}`; g.appendChild(o); });
+  voiceSel.appendChild(g);
+}
+fetch('/voices').then(r=>r.json()).then(d=>{
+  (d.voices||[]).forEach(v=>{ const o=document.createElement('option'); o.value=v.name; o.textContent=`${v.name} (${v.locale})`; voiceSel.appendChild(o); });
+  addAI4Bharat();
+}).catch(addAI4Bharat);
+// Load the real speech classifier if it has been vendored; silently keep the adaptive
+// energy VAD if it hasn't. Never blocks the page.
+initSilero();
+</script>
+</body>
+</html>

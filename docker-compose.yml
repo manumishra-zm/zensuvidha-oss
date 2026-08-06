@@ -1,0 +1,29 @@
+# One command to run the whole thing:  docker compose up --build
+# Brings up Ollama + the app; the app waits for Ollama and pulls the model once.
+services:
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama:/root/.ollama
+    ports:
+      - "11434:11434"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:11434/api/tags"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      ZS_LLM_MODEL: qwen3:4b
+    ports:
+      - "8000:8000"
+    entrypoint: ["/app/scripts/docker-entrypoint.sh"]
+
+volumes:
+  ollama:

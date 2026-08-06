@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+data/
+models/
+*.onnx
+*.onnx.json
+
+# Optional Silero VAD assets (bash scripts/download_vad.sh) — ~13MB, not committed
+web/vendor/
+
+# DeepFilterNet binary (bash scripts/download_deepfilter.sh) — ~28MB, not committed
+models/deep-filter
+models/diarize/
+
+# pytest
+.pytest_cache/

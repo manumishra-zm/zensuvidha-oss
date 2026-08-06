@@ -1,0 +1,15 @@
+# Optional — voice cloning ("Brand Voice": clone the owner's voice from a ~15s clip).
+# HEAVY (~4GB with torch) and slow on CPU (a few sec/sentence); real-time on GPU.
+# XTTS-v2 is non-commercial (fine for demos/pilots).
+#
+# INSTALL IN THIS ORDER (pip can't resolve it in one shot):
+#   1) pip install -r requirements-clone.txt
+#   2) if step 1 complains about torch, install it first per https://pytorch.org
+#      then re-run step 1.
+#
+# Exact versions that are known to work together on Python 3.12 / macOS:
+coqui-tts>=0.27            # XTTS-v2 zero-shot cloning (imports as `TTS`)
+torch>=2.2                 # required by coqui-tts (install per pytorch.org for your OS/GPU)
+torchaudio>=2.2
+torchcodec>=0.1            # audio decode backend coqui-tts needs
+transformers>=4.57,<5      # coqui-tts needs >=4.57; transformers 5.x is INCOMPATIBLE

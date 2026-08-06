@@ -1,0 +1,691 @@
+<title>ZenSuvidha OSS — System &amp; Flow</title>
+
+<style>
+  :root{
+    --ink:#101519; --ink-2:#39464f; --ink-3:#6d7c86;
+    --bg:#F5F7F7; --card:#FFFFFF; --line:#DEE4E5; --line-2:#EDF1F1;
+    --accent:#0A6E7C; --accent-soft:#E2F0F2;
+    --browser:#7A4FB5; --browser-bg:#F0EAF9;
+    --server:#0A6E7C; --server-bg:#E2F0F2;
+    --model:#B0651A; --model-bg:#FAEEE0;
+    --good:#2A6B50; --good-bg:#E6F1EB;
+    --stop:#9E3A2E; --stop-bg:#F7E7E4;
+    --warn:#87621A; --warn-bg:#F6EFDC;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --ink:#E7EDEF; --ink-2:#AEBCC4; --ink-3:#7C8C95;
+      --bg:#0D1316; --card:#141C20; --line:#243036; --line-2:#1B2429;
+      --accent:#4CC0D1; --accent-soft:#102E34;
+      --browser:#B79AE6; --browser-bg:#22193A;
+      --server:#4CC0D1; --server-bg:#102E34;
+      --model:#E0A560; --model-bg:#2E2314;
+      --good:#5FC496; --good-bg:#14291F;
+      --stop:#E0857A; --stop-bg:#2B1A17;
+      --warn:#D5AC59; --warn-bg:#292314;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ink:#E7EDEF; --ink-2:#AEBCC4; --ink-3:#7C8C95;
+    --bg:#0D1316; --card:#141C20; --line:#243036; --line-2:#1B2429;
+    --accent:#4CC0D1; --accent-soft:#102E34;
+    --browser:#B79AE6; --browser-bg:#22193A;
+    --server:#4CC0D1; --server-bg:#102E34;
+    --model:#E0A560; --model-bg:#2E2314;
+    --good:#5FC496; --good-bg:#14291F;
+    --stop:#E0857A; --stop-bg:#2B1A17;
+    --warn:#D5AC59; --warn-bg:#292314;
+  }
+  :root[data-theme="light"]{
+    --ink:#101519; --ink-2:#39464f; --ink-3:#6d7c86;
+    --bg:#F5F7F7; --card:#FFFFFF; --line:#DEE4E5; --line-2:#EDF1F1;
+    --accent:#0A6E7C; --accent-soft:#E2F0F2;
+    --browser:#7A4FB5; --browser-bg:#F0EAF9;
+    --server:#0A6E7C; --server-bg:#E2F0F2;
+    --model:#B0651A; --model-bg:#FAEEE0;
+    --good:#2A6B50; --good-bg:#E6F1EB;
+    --stop:#9E3A2E; --stop-bg:#F7E7E4;
+    --warn:#87621A; --warn-bg:#F6EFDC;
+  }
+
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;
+       line-height:1.62;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1000px;margin:0 auto;padding:52px 22px 96px;
+        display:flex;flex-direction:column;gap:46px;}
+  p{max-width:70ch;} a{color:var(--accent);}
+
+  header{display:flex;flex-direction:column;gap:13px;border-bottom:2px solid var(--ink);
+         padding-bottom:24px;}
+  .eyebrow{font-family:var(--mono);font-size:11.5px;letter-spacing:.15em;
+           text-transform:uppercase;color:var(--accent);}
+  h1{font-size:clamp(29px,5vw,44px);line-height:1.08;margin:0;font-weight:640;
+     letter-spacing:-.02em;text-wrap:balance;}
+  .lede{font-size:17.5px;color:var(--ink-2);max-width:64ch;margin:0;}
+  .stamp{font-family:var(--mono);font-size:11.5px;color:var(--ink-3);
+         display:flex;flex-wrap:wrap;gap:6px 20px;}
+
+  section{display:flex;flex-direction:column;gap:16px;}
+  h2{font-size:23px;font-weight:640;margin:0;letter-spacing:-.01em;
+     display:flex;align-items:baseline;gap:12px;}
+  h2::before{content:attr(data-n);font-family:var(--mono);font-size:12px;
+             color:var(--accent);font-weight:500;}
+  h3{font-size:16px;font-weight:640;margin:16px 0 0;letter-spacing:-.005em;}
+
+  /* measured facts wear the mono face — the whole project runs on that distinction */
+  .m{font-family:var(--mono);font-size:.9em;color:var(--accent);
+     font-variant-numeric:tabular-nums;}
+
+  pre{font-family:var(--mono);font-size:12.5px;line-height:1.5;background:var(--card);
+      border:1px solid var(--line);border-radius:10px;padding:18px 20px;
+      overflow-x:auto;color:var(--ink-2);margin:0;}
+  pre b{color:var(--ink);font-weight:600;}
+  pre .br{color:var(--browser);} pre .sv{color:var(--server);} pre .md{color:var(--model);}
+  pre .no{color:var(--stop);} pre .ok{color:var(--good);}
+
+  .note{border-left:3px solid var(--accent);background:var(--accent-soft);
+        padding:13px 17px;border-radius:0 8px 8px 0;font-size:15px;color:var(--ink-2);
+        max-width:72ch;}
+  .note strong{color:var(--ink);}
+  .note.bad{border-color:var(--stop);background:var(--stop-bg);}
+
+  .scroll{overflow-x:auto;border:1px solid var(--line);border-radius:10px;
+          background:var(--card);}
+  table{border-collapse:collapse;width:100%;font-size:14.5px;min-width:640px;}
+  th{text-align:left;font-family:var(--mono);font-size:10.5px;letter-spacing:.09em;
+     text-transform:uppercase;color:var(--ink-3);font-weight:500;padding:11px 15px;
+     border-bottom:1px solid var(--line);white-space:nowrap;}
+  td{padding:11px 15px;border-bottom:1px solid var(--line-2);vertical-align:top;}
+  tr:last-child td{border-bottom:0;}
+  td.n{font-weight:600;white-space:nowrap;}
+  td.lic{font-family:var(--mono);font-size:12px;color:var(--ink-3);white-space:nowrap;}
+  .num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap;}
+
+  .tag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.04em;
+       padding:2px 8px;border-radius:5px;white-space:nowrap;}
+  .t-br{background:var(--browser-bg);color:var(--browser);}
+  .t-sv{background:var(--server-bg);color:var(--server);}
+  .t-md{background:var(--model-bg);color:var(--model);}
+  .t-no{background:var(--stop-bg);color:var(--stop);}
+  .t-ok{background:var(--good-bg);color:var(--good);}
+  .t-wa{background:var(--warn-bg);color:var(--warn);}
+
+  ul{margin:0;padding-left:20px;max-width:70ch;}
+  li{margin-bottom:6px;} li::marker{color:var(--accent);}
+  hr{border:0;border-top:1px solid var(--line);margin:0;}
+  .foot{font-size:13.5px;color:var(--ink-3);max-width:68ch;}
+
+  /* ---- CSS flow diagram -------------------------------------------------
+     Built from real elements rather than preformatted text so it reflows on a
+     phone, and so each stage can carry its own colour, cost and condition. */
+  .flow{display:flex;flex-direction:column;gap:0;margin:4px 0;}
+  .lane{display:flex;flex-direction:column;gap:0;border-radius:12px;padding:14px 16px 16px;
+        border:1px solid var(--line);background:var(--card);}
+  .lane + .lane{margin-top:22px;}
+  .lane-h{display:flex;align-items:center;gap:9px;margin-bottom:12px;
+          font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;}
+  .lane-h .dot{width:9px;height:9px;border-radius:50%;flex:none;}
+  .lane-br .dot{background:var(--browser);} .lane-br .lane-h{color:var(--browser);}
+  .lane-sv .dot{background:var(--server);}  .lane-sv .lane-h{color:var(--server);}
+  .lane-br{background:linear-gradient(180deg,var(--browser-bg) 0%,transparent 46%);}
+  .lane-sv{background:linear-gradient(180deg,var(--server-bg) 0%,transparent 46%);}
+
+  .step{position:relative;padding:11px 0 11px 26px;}
+  /* the rail + node that make it read as a flow rather than a list */
+  .step::before{content:"";position:absolute;left:6px;top:0;bottom:0;width:2px;
+                background:var(--line);}
+  .step:last-child::before{bottom:calc(100% - 20px);}
+  .step::after{content:"";position:absolute;left:2px;top:17px;width:10px;height:10px;
+               border-radius:50%;background:var(--card);border:2px solid var(--accent);}
+  .step.br::after{border-color:var(--browser);}
+  .step.sv::after{border-color:var(--server);}
+  .step-t{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;}
+  .step-t b{font-size:15px;font-weight:640;letter-spacing:-.005em;}
+  .step-t .sub{font-family:var(--mono);font-size:11px;color:var(--ink-3);}
+  .step p{margin:3px 0 0;font-size:13.8px;color:var(--ink-2);max-width:64ch;line-height:1.5;}
+  .cost{font-family:var(--mono);font-size:10.5px;padding:2px 7px;border-radius:5px;
+        background:var(--good-bg);color:var(--good);white-space:nowrap;}
+  .cost.off{background:var(--stop-bg);color:var(--stop);}
+  .cost.mid{background:var(--warn-bg);color:var(--warn);}
+
+  /* a conditional fork inside a step */
+  .fork{display:flex;flex-direction:column;gap:7px;margin-top:9px;padding-left:14px;
+        border-left:2px dashed var(--line);}
+  .fork-row{display:flex;align-items:baseline;gap:10px;font-size:13.2px;flex-wrap:wrap;}
+  .fork-row .cond{font-family:var(--mono);font-size:11.5px;color:var(--ink);
+                  background:var(--line-2);padding:2px 7px;border-radius:5px;white-space:nowrap;}
+  .fork-row .arrow{color:var(--ink-3);}
+  .fork-row .out{color:var(--ink-2);}
+
+  /* the guard chain — a horizontal run of checks */
+  .chain{display:flex;flex-wrap:wrap;gap:7px;margin-top:6px;}
+  .chain span{font-family:var(--mono);font-size:11.5px;padding:4px 9px;border-radius:6px;
+              background:var(--stop-bg);color:var(--stop);}
+  .chain span::after{content:" →";color:var(--ink-3);}
+  .chain span:last-child::after{content:"";}
+
+  /* side-by-side comparison blocks */
+  .versus{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;}
+  .vbox{border:1px solid var(--line);border-radius:10px;padding:13px 15px;background:var(--card);}
+  .vbox h4{margin:0 0 6px;font-size:13px;font-family:var(--mono);letter-spacing:.05em;
+           text-transform:uppercase;color:var(--ink-3);font-weight:500;}
+  .vbox .big{font-family:var(--mono);font-size:22px;font-variant-numeric:tabular-nums;
+             letter-spacing:-.02em;}
+  .vbox p{margin:5px 0 0;font-size:13px;color:var(--ink-2);}
+  .vbox.win .big{color:var(--good);} .vbox.lose .big{color:var(--stop);}
+  .legend{display:flex;flex-wrap:wrap;gap:8px 14px;font-size:13px;color:var(--ink-3);}
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">ZenSuvidha OSS · system reference</div>
+  <h1>Every component, where it runs, and the measurement that put it there</h1>
+  <p class="lede">An offline voice receptionist for Indian small businesses — the full
+    flow of one call, the open-source stack behind it, and what each piece is actually
+    worth.</p>
+  <div class="stamp">
+    <span>401 tests</span><span>9/9 interference shapes</span>
+    <span>M1 Pro · CPU</span><span>August 2026</span>
+  </div>
+</header>
+
+<div class="note">
+  Numbers in <span class="m">this typeface</span> were measured on this codebase.
+  Everything else is judgement. Several decisions here reversed once the number was
+  taken — a threshold tuned on the wrong audio is worse than none, because it looks
+  authoritative.
+</div>
+
+<div class="legend">
+  <span><span class="tag t-br">browser</span> runs on the caller's machine</span>
+  <span><span class="tag t-sv">server</span> the FastAPI process</span>
+  <span><span class="tag t-md">model</span> a downloaded model file</span>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<section>
+  <h2 data-n="01">One call, end to end</h2>
+  <p>The wide path is the common one. Everything indented is an exception that only
+    fires when its condition is met.</p>
+
+
+  <div class="flow">
+    <div class="lane lane-br">
+      <div class="lane-h"><span class="dot"></span>browser · the caller's machine</div>
+
+      <div class="step br">
+        <div class="step-t"><b>Microphone</b><span class="sub">getUserMedia</span></div>
+        <p>Echo cancellation and noise suppression on; <strong>automatic gain
+          off</strong> — AGC rescales the very signal the VAD's noise floor adapts to.</p>
+      </div>
+
+      <div class="step br">
+        <div class="step-t"><b>AudioWorklet</b><span class="sub">vad-worklet.js</span>
+          <span class="cost">off the main thread</span></div>
+        <p>Splits into two paths: raw PCM goes to the server untouched, while a 2-pole
+          biquad at 300–3400 Hz feeds <em>only</em> the level gate —
+          <span class="m">2.79×</span> noise rejection. Whisper never sees band-limited
+          audio.</p>
+      </div>
+
+      <div class="step br">
+        <div class="step-t"><b>Silero VAD v5</b><span class="sub">ONNX-WASM · 2.3 MB</span></div>
+        <p>Answers "is this speech?" — never "whose?". Needs the previous frame's last 64
+          samples prepended, or it scores <span class="m">0.11</span> on clear speech
+          instead of <span class="m">0.99</span>, and looks fine doing it.</p>
+      </div>
+
+      <div class="step br">
+        <div class="step-t"><b>Endpointer</b><span class="sub">learns per caller</span></div>
+        <div class="fork">
+          <div class="fork-row"><span class="cond">short answer</span><span class="arrow">→</span>
+            <span class="out">800 ms — "haan", a phone number</span></div>
+          <div class="fork-row"><span class="cond">&gt; 1.5 s</span><span class="arrow">→</span>
+            <span class="out">1200 ms — long enough to <em>have</em> a middle</span></div>
+          <div class="fork-row"><span class="cond">learned</span><span class="arrow">→</span>
+            <span class="out">up to 2000 ms for this caller's rhythm</span></div>
+          <div class="fork-row"><span class="cond">sounds unfinished</span><span class="arrow">→</span>
+            <span class="out">+900 ms — the words say so, not the silence</span></div>
+        </div>
+      </div>
+
+      <div class="step br">
+        <div class="step-t"><b>Latch guard</b><span class="sub">loud continuous audio</span>
+          <span class="cost off">discards the turn</span></div>
+        <p>7 s recorded and never once a 260 ms pause? People breathe; a speaker at full
+          volume does not. Throw it away and ask them to repeat, rather than sending
+          Whisper 15 s of noise and getting an empty string back.</p>
+      </div>
+
+      <div class="step br">
+        <div class="step-t"><b>Self-echo guard</b><span class="sub">barge-in</span></div>
+        <p>Interrupting also requires the audio to be <em>louder</em> than a
+          room-attenuated echo of our own output. The browser's AEC hides this today — a
+          telephony transport has no getUserMedia, and the agent would interrupt itself
+          on a loop.</p>
+      </div>
+    </div>
+
+    <div class="lane lane-sv">
+      <div class="lane-h"><span class="dot"></span>server · pipeline.prepare()</div>
+
+      <div class="step sv">
+        <div class="step-t"><b>Isolate</b><span class="sub">on RAW audio</span></div>
+        <p>Identity is measurably worse on denoised audio
+          (<span class="m">0.675 vs 0.596</span>), and this is the only step that can
+          remove another human <em>voice</em>. So it runs first, before anything has
+          been altered.</p>
+        <div class="fork">
+          <div class="fork-row"><span class="cond">no voiceprint</span><span class="arrow">→</span>
+            <span class="out">skip entirely</span><span class="cost">0 ms</span></div>
+          <div class="fork-row"><span class="cond">1 voice, &lt; 4 s</span><span class="arrow">→</span>
+            <span class="out">done — the common case</span><span class="cost">~49 ms</span></div>
+          <div class="fork-row"><span class="cond">1 voice, ≥ 4 s</span><span class="arrow">→</span>
+            <span class="out">thirds gate, 3 ECAPA passes</span><span class="cost">~124 ms</span></div>
+          <div class="fork-row"><span class="cond">ambiguous</span><span class="arrow">→</span>
+            <span class="out">window rescan, ≤ 8 passes</span><span class="cost mid">~340 ms</span></div>
+          <div class="fork-row"><span class="cond">2+ voices</span><span class="arrow">→</span>
+            <span class="out">score each cluster, keep the caller's, re-check for a merge</span></div>
+        </div>
+      </div>
+
+      <div class="step sv">
+        <div class="step-t"><b>Denoise</b><span class="sub">DeepFilterNet</span>
+          <span class="cost off">off by default</span></div>
+        <p>Measured across 30 conditions it won 1 and lost 8. It costs accuracy as well
+          as <span class="m">226–475 ms</span> — see §4.</p>
+      </div>
+
+      <div class="step sv">
+        <div class="step-t"><b>Silero VAD v6</b><span class="sub">free inside faster-whisper</span></div>
+        <p>Strips silence before recognition. This is what stops Whisper inventing
+          "5,5,5,5…" out of noise.</p>
+      </div>
+
+      <div class="step sv">
+        <div class="step-t"><b>Speech recognition</b><span class="sub">faster-whisper · CTranslate2</span>
+          <span class="cost mid">~1070 ms</span></div>
+        <p>Three rejections before a transcript is trusted: <span class="m">no_speech
+          &gt; 0.85</span>, <span class="m">avg_logprob &lt; −1.6</span>, and a degeneracy
+          check that <em>trims</em> a runaway run first — dropping the whole turn once
+          cost a caller their phone number.</p>
+      </div>
+
+      <div class="step sv">
+        <div class="step-t"><b>Speaker gate</b><span class="sub">ECAPA-TDNN</span>
+          <span class="cost">~34 ms</span></div>
+        <div class="fork">
+          <div class="fork-row"><span class="cond">no print</span><span class="arrow">→</span>
+            <span class="out">enrol, accept</span></div>
+          <div class="fork-row"><span class="cond">never matched</span><span class="arrow">→</span>
+            <span class="out">accept — it has not earned the right to refuse</span></div>
+          <div class="fork-row"><span class="cond">not corroborated</span><span class="arrow">→</span>
+            <span class="out">accept near misses, remember rivals</span></div>
+          <div class="fork-row"><span class="cond">proven + corroborated</span><span class="arrow">→</span>
+            <span class="out">now it may refuse</span></div>
+        </div>
+      </div>
+
+      <div class="step sv">
+        <div class="step-t"><b>Language model</b><span class="sub">Qwen3-4B · Ollama · Metal</span>
+          <span class="cost">400–600 ms to first token</span></div>
+        <p>Forced JSON <span class="m">{kind, say, action}</span>, token-streamed. The
+          6,089-token prompt is byte-identical every turn so Ollama reuses its KV
+          cache — which is why steady-state turns are <span class="m">640 ms</span>.</p>
+      </div>
+
+      <div class="step sv">
+        <div class="step-t"><b>Guard</b><span class="sub">on the stream</span></div>
+        <p>Every sentence is verified before synthesis, because on a call you cannot
+          un-say a price.</p>
+        <div class="chain"><span>kind</span><span>echo</span><span>repetition</span><span>degeneracy</span><span>ungrounded numbers</span><span>language</span></div>
+      </div>
+
+      <div class="step sv">
+        <div class="step-t"><b>Speech synthesis</b><span class="sub">script-routed</span>
+          <span class="cost">385 ms</span></div>
+        <div class="fork">
+          <div class="fork-row"><span class="cond">Latin · Devanagari</span><span class="arrow">→</span>
+            <span class="out">Kokoro — in-process, scales with the text</span></div>
+          <div class="fork-row"><span class="cond">other scripts</span><span class="arrow">→</span>
+            <span class="out">system voice — 5 languages have none at all</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p style="font-size:13.5px;color:var(--ink-3);max-width:70ch;">The same flow as plain
+    text, for a terminal or a diff:</p>
+<pre><b>caller speaks</b>
+     │
+ ┌───▼─────────────────────── <span class="br">BROWSER</span> ─────────────────────────────────┐
+ │ getUserMedia    echoCancel ON · noiseSuppress ON · <b>autoGain OFF</b>       │
+ │                 └ AGC rescales the signal the VAD's floor adapts to     │
+ │                                                                        │
+ │ AudioWorklet ─┬─ raw pcm ─────────────────────────────► to the server  │
+ │  (off the     │                                                        │
+ │   main thread └─ biquad 300–3400Hz ─► rmsBand ─► <b>level gate only</b>     │
+ │   so a busy      2.79× noise rejection. Whisper never sees             │
+ │   UI can never   band-limited audio.                                   │
+ │   drop frames)                                                         │
+ │                                                                        │
+ │ <b>Silero VAD v5</b>   "is this speech?" — never "whose?"                     │
+ │   needs the previous frame's last 64 samples prepended, or it scores   │
+ │   0.11 on clear speech instead of 0.99 — and looks fine doing it       │
+ │                                                                        │
+ │ <b>ENDPOINTER</b>  the window depends on what they said                       │
+ │   short answer ("haan", a phone number) ·······  800 ms                │
+ │   long enough to HAVE a middle (&gt;1.5s) ········ 1200 ms                │
+ │   learns this caller's rhythm, up to ·········· 2000 ms                │
+ │   transcript SOUNDS unfinished ················ +900 ms                │
+ │                                                                        │
+ │ <span class="no">LATCH GUARD</span>   7s recorded and never a 260ms pause? People breathe;  │
+ │   a speaker at full volume does not. Discard, ask them to repeat.      │
+ │                                                                        │
+ │ <span class="no">SELF-ECHO GUARD</span>   barge-in also needs the audio LOUDER than a       │
+ │   room-attenuated echo of our own output — the browser's AEC hides     │
+ │   this today, a phone line has no getUserMedia                         │
+ └────────────────────────────────────────────────────────────────────────┘
+     │  ~3s of audio, typical
+ ┌───▼────────────── <span class="sv">SERVER</span> · pipeline.prepare() ──────────────────────┐
+ │                                                                        │
+ │ <b>1. ISOLATE</b> — on RAW audio. Identity is worse on denoised audio        │
+ │    (<span class="m">0.675 vs 0.596</span>), and this is the only step that removes a VOICE.  │
+ │                                                                        │
+ │    no voiceprint yet? ──────────────► skip           (turn 1, <span class="m">0 ms</span>)   │
+ │    pyannote-segmentation-3.0 ─► WHERE each voice starts and stops      │
+ │    3D-Speaker ERes2Net ───────► clusters those into "voices"           │
+ │                                                                        │
+ │    1 cluster, clip &lt;4s ──────► done                     <span class="ok">(~49 ms)</span>      │
+ │    1 cluster, clip ≥4s ──────► THIRDS GATE, 3 ECAPA passes             │
+ │                                all three are the caller? <span class="ok">(~124 ms)</span>     │
+ │                                else WINDOW RESCAN, ≤8 passes           │
+ │    2+ clusters ──────────────► score each against the caller's print   │
+ │                                keep ≥0.55, or within 0.40 of the best  │
+ │                                AND ≥0.40 absolute                      │
+ │                                one kept? re-check IT for a merge       │
+ │                                                                        │
+ │ <b>2. DENOISE</b> — <span class="no">OFF by default.</span> It costs accuracy as well as time.    │
+ └────────────────────────────────────────────────────────────────────────┘
+     │
+ <b>Silero VAD v6</b>  (ships free inside faster-whisper) strips silence first —
+     │  this is what stops Whisper inventing "5,5,5,5…" out of noise
+     ▼
+ <b>faster-whisper / CTranslate2</b>
+     no_speech &gt; 0.85 → drop  ·  avg_logprob &lt; −1.6 → drop
+     degenerate run → <b>TRIM first</b>, drop only if nothing real survives
+     ▼
+ <b>SPEAKER GATE</b> (ECAPA) — must EARN the right to refuse (§3)
+     ▼
+ <b>Qwen3-4B via Ollama</b> — forced JSON {kind, say, action}, token-streamed
+     ▼
+ <b>GUARD</b> — runs ON the stream, because a spoken price cannot be taken back
+     kind → echo → repetition → degeneracy → ungrounded numbers → language
+     ▼
+ <b>TTS</b> — routed by SCRIPT, not by preference
+     Latin/Devanagari → Kokoro   ·   everything else → the system voice</pre>
+</section>
+
+<hr>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<section>
+  <h2 data-n="02">The stack — what, where, and why</h2>
+
+  <h3>In the pipeline</h3>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Component</th><th>Repo / model</th><th>Licence</th><th>Runs</th><th>Why this one</th></tr></thead>
+      <tbody>
+        <tr><td class="n">Mic + AEC</td><td>WebRTC <span class="m">getUserMedia</span></td><td class="lic">—</td>
+            <td><span class="tag t-br">browser</span></td>
+            <td>AGC is switched <strong>off</strong> — it rescales the very signal the VAD's noise floor adapts to.</td></tr>
+        <tr><td class="n">Band-pass</td><td>2-pole Biquad, 300–3400 Hz</td><td class="lic">ours</td>
+            <td><span class="tag t-br">browser</span></td>
+            <td><span class="m">2.79×</span> noise rejection for the level gate. Feeds the gate only — Whisper gets full-band audio.</td></tr>
+        <tr><td class="n">VAD</td><td>silero-vad <span class="m">v5</span></td><td class="lic">MIT</td>
+            <td><span class="tag t-br">browser</span> <span class="tag t-md">2.3 MB</span></td>
+            <td>Decides whether to <em>open</em> a turn. Loud white noise scores <span class="m">0.023</span>.</td></tr>
+        <tr><td class="n">VAD</td><td>silero-vad <span class="m">v6</span></td><td class="lic">MIT</td>
+            <td><span class="tag t-sv">server</span></td>
+            <td>Ships free inside faster-whisper. Different question: <em>what should Whisper see?</em></td></tr>
+        <tr><td class="n">Segmentation</td><td>pyannote-segmentation-3.0<br>via sherpa-onnx</td><td class="lic">MIT</td>
+            <td><span class="tag t-sv">server</span> <span class="tag t-md">7 MB</span></td>
+            <td>The ungated ONNX form — no HF token, no PyTorch. Finds where each voice starts and stops.</td></tr>
+        <tr><td class="n">Clustering</td><td>3D-Speaker ERes2Net</td><td class="lic">Apache-2.0</td>
+            <td><span class="tag t-sv">server</span> <span class="tag t-md">38 MB</span></td>
+            <td>Groups segments into voices. Its <em>labels</em> are an opinion — we take a second one from ECAPA.</td></tr>
+        <tr><td class="n">Speaker ID</td><td>SpeechBrain ECAPA-TDNN<br><span class="m">spkrec-ecapa-voxceleb</span></td><td class="lic">Apache-2.0</td>
+            <td><span class="tag t-sv">server</span> <span class="tag t-md">80 MB</span></td>
+            <td>Ungated, unlike Indic-Parler. Decides <em>which</em> cluster is the caller.</td></tr>
+        <tr><td class="n">Denoise</td><td>DeepFilterNet <span class="m">0.5.6</span><br>Rust binary</td><td class="lic">MIT/Apache</td>
+            <td><span class="tag t-sv">server</span> <span class="tag t-md">28 MB</span></td>
+            <td><strong>Off by default</strong> (§4). Never the pip wheel — it pins numpy&lt;2 and silently broke the speaker gate.</td></tr>
+        <tr><td class="n">STT</td><td>faster-whisper <span class="m">1.2.1</span><br>CTranslate2 <span class="m">4.8.1</span></td><td class="lic">MIT</td>
+            <td><span class="tag t-sv">server</span> <span class="tag t-md">460 MB</span></td>
+            <td>C++ core. <span class="m">large-v3</span> is required for Telugu/Kannada/Malayalam — <span class="m">small</span> transcribes spoken Telugu into Devanagari.</td></tr>
+        <tr><td class="n">LLM</td><td>Qwen3-4B via Ollama</td><td class="lic">Apache-2.0</td>
+            <td><span class="tag t-sv">server</span> <span class="tag t-md">2.5 GB</span></td>
+            <td>Qwen2.5 covers 29 languages and <strong>Telugu is not one</strong>; Qwen3 covers 119. Never trade the family for size.</td></tr>
+        <tr><td class="n">TTS</td><td>Kokoro <span class="m">0.9.4</span> → system voice</td><td class="lic">Apache-2.0</td>
+            <td><span class="tag t-sv">server</span></td>
+            <td><span class="m">385 ms</span> vs <span class="m">1065 ms</span> for macOS <span class="m">say</span>, which is ~1064 ms of fixed process spawn.</td></tr>
+        <tr><td class="n">Store</td><td>SQLite (WAL)</td><td class="lic">public domain</td>
+            <td><span class="tag t-sv">server</span></td><td>Bookings and transcripts. A DB failure closes the turn; it never replays audio.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Evaluated and rejected — with the reason</h3>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Repo</th><th>Licence</th><th></th><th>Why not</th></tr></thead>
+      <tbody>
+        <tr><td class="n">Pipecat</td><td class="lic">BSD-2</td><td><span class="tag t-wa">later</span></td>
+            <td>No diarization or voice isolation at all — the two toolsets barely overlap. But it has <strong>Exotel and Plivo built in</strong> and runs local Whisper + Ollama + Kokoro. The route to an actual phone number.</td></tr>
+        <tr><td class="n">ClearerVoice-Studio</td><td class="lic">Apache-2.0</td><td><span class="tag t-no">no weights</span></td>
+            <td>The only TSE checkpoint is <span class="m">AV_MossFormer2_TSE_16K</span> — <strong>audio-visual</strong>, needs a face video. Useless on a phone.</td></tr>
+        <tr><td class="n">LiveKit noise cancel</td><td class="lic">proprietary</td><td><span class="tag t-no">blocked</span></td>
+            <td>Krisp / ai-coustics — closed, cloud-side, voice isolation billed per use. Kills "offline" and "open source" together.</td></tr>
+        <tr><td class="n">MLX</td><td class="lic">MIT</td><td><span class="tag t-no">no gain</span></td>
+            <td>Measured <span class="m">39.6</span> vs Ollama's <span class="m">38.7 tok/s</span>. Ollama is already 100 % Metal on this machine.</td></tr>
+        <tr><td class="n">AirLLM</td><td class="lic">Apache-2.0</td><td><span class="tag t-no">wrong tool</span></td>
+            <td>Fits a 70B model into 4 GB by loading one layer at a time. A <em>memory</em> tool — it would be slower.</td></tr>
+        <tr><td class="n">Silero <em>denoise</em></td><td class="lic">CC-NC-BY</td><td><span class="tag t-no">licence</span></td>
+            <td>Non-commercial. Their <em>VAD</em> is MIT — easy to conflate, and we use that.</td></tr>
+        <tr><td class="n">noisereduce</td><td class="lic">MIT</td><td><span class="tag t-no">measured</span></td>
+            <td><span class="m">0.00</span> WER delta down to 0 dB SNR, and it made the speaker gate <em>worse</em> in every condition.</td></tr>
+        <tr><td class="n">Parakeet</td><td class="lic">CC-BY-4.0</td><td><span class="tag t-no">languages</span></td>
+            <td>25 European languages. No Telugu.</td></tr>
+        <tr><td class="n">Vosk · Demucs · WeSep</td><td class="lic">Apache / MIT</td><td><span class="tag t-no">—</span></td>
+            <td>Weaker than Whisper for Indic · music separation, wrong problem · pretrained weights still a TODO.</td></tr>
+        <tr><td class="n">XTTS</td><td class="lic"><strong>non-commercial</strong></td><td><span class="tag t-wa">liability</span></td>
+            <td>Still a selectable provider and <strong>undocumented as non-commercial</strong>. Anyone deploying commercially would not know.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<hr>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<section>
+  <h2 data-n="03">The speaker gate, and why it is so cautious</h2>
+  <p>It answers <em>"is this the person whose call this is?"</em>. It has caused more
+    user-visible failures than anything else here, and every fix has moved it toward
+    refusing <em>less</em>.</p>
+
+  <div class="note bad">
+    <strong>The measurement that explains all of them.</strong>
+    <pre style="border:0;background:none;padding:8px 0 0;margin:0">macOS <b>say</b> voices   same speaker <b>0.867</b>   closest impostor <b>0.429</b>   → 0.55 works
+a real microphone    same speaker <b>0.27–0.41</b>                        → 0.55 refuses them</pre>
+    The threshold was calibrated on synthetic audio. On a real mic, in a room measured
+    <em>clean</em>, a caller's own consecutive turns scored 0.37 / 0.27 / 0.29 / 0.41 —
+    never once above it.
+  </div>
+
+  <p>So two independent conditions must hold before anyone is refused:</p>
+  <ul>
+    <li><strong>proven</strong> — it has matched this caller at least once <em>on this
+      call</em>. A gate that has never recognised them has no evidence it can, and
+      refusing on that is a coin toss that silences whoever is actually on the phone.</li>
+    <li><strong>corroborated</strong> — the print is more than one un-corroborated
+      sample.</li>
+  </ul>
+  <p>While either is missing, a mismatch is <em>answered</em> and the voice remembered as
+    a <strong>rival</strong>. A rival that returns twice becomes the caller — the voice
+    having the conversation is the caller, and a song does not follow up on its own
+    question.</p>
+
+  <div class="note">
+    <strong>Our own trimming was refusing the caller.</strong> <span class="m">_voiced_only</span>
+    used to splice out the gaps between words, and every join is an artificial transient
+    the encoder hears as part of the voice. It scored the caller
+    <span class="m">0.450</span> against their own sentence — below threshold. Keeping the
+    voiced <em>span</em> gives <span class="m">0.843</span>. The tell was a metric that got
+    <em>worse</em> with more audio: <span class="m">3.0 s → 0.507</span> against
+    <span class="m">2.0 s → 0.818</span>.
+  </div>
+</section>
+
+<hr>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<section>
+  <h2 data-n="04">Noise — rejection-first, not reduction-first</h2>
+  <p>Of the layers that touch noise, only two modify the signal. The rest refuse to act.</p>
+
+  <div class="note bad">
+    <strong>Auto-denoise is OFF, and this is measured.</strong> DeepFilterNet across six
+    interference types × five SNRs — 30 conditions:
+    <pre style="border:0;background:none;padding:8px 0 0;margin:0">DeepFilter WON <b>1</b> cell, LOST <b>8</b>, tied 21      net <b>−400%</b> word recall
+white hiss <b>−50%</b>   ·   fan/AC <b>−67%</b>   ·   music+vocals <b>−100%</b></pre>
+    It is also the most expensive stage at <span class="m">226–475 ms</span>. On the
+    recognition path it costs time <em>and</em> accuracy — the same verdict
+    <span class="m">noisereduce</span> got. Whisper trained on 680k hours of messy audio.
+  </div>
+
+  <h3>What it survives</h3>
+  <p>Caller-relative SNR: <span class="m">+12</span> = you are 12 dB louder than the
+    noise, <span class="m">0</span> = equal, <span class="m">−6</span> = the noise is
+    twice as loud as you. "Works" means the words survived <em>and</em> the caller was
+    still recognised.</p>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Interference</th><th>Works down to</th><th>What breaks first</th></tr></thead>
+      <tbody>
+        <tr><td class="n">mains hum 50 Hz</td><td class="num">−6 dB</td><td>nothing — voice still 0.73</td></tr>
+        <tr><td class="n">traffic rumble</td><td class="num">−6 dB</td><td>nothing — 0.74</td></tr>
+        <tr><td class="n">music, no vocals</td><td class="num">−6 dB</td><td>nothing — 0.65</td></tr>
+        <tr><td class="n">another speaker</td><td class="num">0 dB</td><td>your <em>voice</em>, not your words</td></tr>
+        <tr><td class="n">pink / room tone</td><td class="num">+3 dB</td><td>voice match</td></tr>
+        <tr><td class="n">music <strong>with vocals</strong></td><td class="num">+3 dB</td><td>voice match collapses 0.65 → 0.39</td></tr>
+        <tr><td class="n">TV / babble</td><td class="num">+3 dB</td><td>words and voice together</td></tr>
+        <tr><td class="n">white noise</td><td class="num">+6 dB</td><td>words drop to 50 %</td></tr>
+        <tr><td class="n"><strong>fan · AC</strong></td><td class="num"><strong>+12 dB</strong></td><td>words — the worst performer</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>Two patterns. Low-frequency and tonal interference is nearly free; broadband is
+    expensive. And <strong>anything containing a human voice takes out the speaker gate
+    before it takes out the transcript</strong> — the words usually survive, it is
+    recognising them as <em>yours</em> that fails.</p>
+</section>
+
+<hr>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<section>
+  <h2 data-n="05">Where the time goes</h2>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Stage</th><th>3 s clip</th><th>6 s clip</th></tr></thead>
+      <tbody>
+        <tr><td class="n">isolate (diarization + ECAPA)</td><td class="num">66 ms</td><td class="num">146 ms</td></tr>
+        <tr><td class="n">speaker gate</td><td class="num">34 ms</td><td class="num">54 ms</td></tr>
+        <tr><td class="n"><strong>STT</strong></td><td class="num"><strong>1070 ms</strong></td><td class="num"><strong>1168 ms</strong></td></tr>
+        <tr><td class="n">LLM first token (English)</td><td class="num">400–600 ms</td><td></td></tr>
+        <tr><td class="n">TTS, first sentence</td><td class="num">385 ms</td><td></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong>The audio path is STT-bound.</strong> Isolation is ~6 % of it. Four attempts
+    to speed it further were measured and rejected: ECAPA on <span class="m">MPS</span>
+    fails outright (SpeechBrain keeps CPU tensors); batching the thirds gate is a real
+    1.5× on a 60 ms stage; <span class="m">cpu_threads</span> is <em>worse</em> with more
+    threads on Apple silicon (<span class="m">auto 1691 · 8 threads 2212 · 10 threads
+    3798 ms</span>); and STT fast mode is not reliably faster.</p>
+
+  <div class="note">
+    <strong>Indic latency is tokenizer inflation, not runtime.</strong> At
+    <span class="m">38.7 tok/s</span> a 40-token reply is <span class="m">1.03 s</span> in
+    English, <span class="m">3.62 s</span> in Hindi, <span class="m">6.41 s</span> in
+    Telugu. No inference library fixes that — which is why MLX was benchmarked and
+    rejected. The GPU preset is the answer, and it also fixes the five mute languages.
+  </div>
+</section>
+
+<hr>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<section>
+  <h2 data-n="06">Three things that look wasteful and are not</h2>
+
+  <div class="note">
+    <strong>The 6,089-token system prompt.</strong> It is load-bearing twice: the whole
+    knowledge base sits in a byte-identical prefix so Ollama reuses its KV cache
+    (<span class="m">640 ms</span> steady-state turns), <em>and</em> the full English KB
+    is what lets Hindi and Telugu callers get answers at all — English tags cannot
+    retrieve against a native-script query. Trimming it breaks both.
+  </div>
+
+  <div class="note">
+    <strong>Silero running twice.</strong> v5 in the browser answers "should I open a
+    turn?"; v6 on the server answers "what should Whisper see?". Different questions —
+    and the second copy ships free inside faster-whisper.
+  </div>
+
+  <div class="note">
+    <strong>Two protocol messages that do nothing on a good call.</strong>
+    <span class="m">commit_miss</span> and <span class="m">turn_dropped</span> exist so
+    the call can never wedge: the client enters "thinking" the moment it ships audio and
+    only leaves on a reply, so every path that declines to answer must say so. Silence is
+    often the right <em>reply</em>; it is never the right <em>protocol</em>.
+  </div>
+</section>
+
+<hr>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<section>
+  <h2 data-n="07">What is not solved</h2>
+  <ul>
+    <li><strong>Fan/AC needs +12 dB.</strong> You must be four times louder than a ceiling
+      fan — the commonest Indian-SMB condition — and denoising cannot rescue it
+      (measured <span class="m">−67 %</span>).</li>
+    <li><strong>Five languages have no voice</strong> on macOS: Malayalam, Gujarati,
+      Punjabi, Odia, Urdu. The caller sees the reply and hears nothing. Warned at boot;
+      fixed only by the GPU preset with Indic-Parler.</li>
+    <li><strong>Loud audio at the mic destroys the voiceprint</strong>
+      (<span class="m">0.07</span> on the caller's own voice). Mitigated — the latch guard
+      cuts it and asks for a repeat — not solved.</li>
+    <li><strong>No echo cancellation without a browser.</strong> All AEC comes from
+      <span class="m">getUserMedia</span>. A telephony transport has none, so the agent
+      would hear itself and interrupt itself on a loop. A level-based guard is in place;
+      real server-side AEC is needed before the phone line.</li>
+    <li><strong>Every remaining threshold is calibrated on synthetic speech.</strong> A
+      real microphone has already proved one wrong by more than 2×. Real recordings are
+      the single highest-value missing input.</li>
+    <li><strong>No LICENSE file</strong>, and XTTS — a selectable provider — is
+      non-commercial and undocumented as such.</li>
+  </ul>
+</section>
+
+<hr>
+<p class="foot">Compiled from measurements taken on this codebase. Where a number
+  appears, it was run; where it does not, the claim is judgement and should be treated as
+  such. Full detail in <span class="m">ARCHITECTURE.md</span>.</p>
+
+</div>

@@ -1,0 +1,118 @@
+# ZenSuvidha OSS — GPU deployment preset (E2E L40S 48GB / A100 / H100).
+# Use with:  ZS_CONFIG=config.gpu.yaml uvicorn zensuvidha.server:app --host 0.0.0.0 --port 8000
+#
+# Goal: STT + LLM + TTS that work PROPERLY for ALL Indian languages, real-time on a GPU.
+# (macOS `say` is NOT available on a Linux GPU server, so we use open-source neural models.)
+
+stt:
+  provider: faster_whisper
+  model: large-v3            # Indian languages (Telugu/Kannada/Malayalam) need large-v3; 'small' is too weak.
+  language: null             # auto-detect; or pin per call from the UI Language dropdown
+  device: cuda               # run STT on the GPU
+  compute_type: float16      # GPU float16 (int8_float16 also fine)
+  beam_size: 5               # GPU can afford the wider, more accurate beam
+  fast_beam_size: 1
+  vad_filter: true
+  denoise: false             # browser already does noiseSuppression — a 2nd pass just adds latency
+  reject_no_speech: 0.85     # junk/phantom rejection (tuned to NOT drop real speech)
+  reject_logprob: -1.6
+
+# ── LLM ─────────────────────────────────────────────────────────────────────────
+# MODEL CHOICE MATTERS MORE THAN SIZE. Qwen2.5 supports 29 languages and Telugu is NOT
+# among them; Qwen3 supports 119 and includes Telugu/Tamil/Kannada/Malayalam. A 14B
+# Qwen2.5 is WORSE at Telugu than a 4B Qwen3 — never trade the Qwen3 family for size.
+#
+# PHASE 1 (start here) — Ollama on the GPU. Uses CUDA automatically, no extra server.
+llm:
+  provider: ollama
+  model: qwen3:14b           # `ollama pull qwen3:14b` (~9GB). qwen3:8b if VRAM is tight.
+  base_url: http://localhost:11434
+  temperature: 0.3
+  keep_alive: "30m"          # keep weights resident between calls
+  timeout: 120
+  retries: 2
+  num_predict: 200           # base budget; auto-scaled per language (guard.TOKEN_FACTOR)
+  num_ctx: 12288             # MUST match config.yaml. At 6144 the clinic prompt (~4k) plus
+                             #   the caller's-language facts (~1k in Telugu) plus the
+                             #   conversation OVERFLOWS, Ollama silently drops the oldest
+                             #   messages, and the agent loses its own instructions mid-call
+                             #   and starts looping. orchestrator.MIN_CONTEXT enforces this
+                             #   floor for Ollama, but vLLM's context is fixed at LAUNCH —
+                             #   see --max-model-len below.
+  think: false               # Qwen3 chain-of-thought = seconds of dead air on a call
+
+# PHASE 2 (once quality is confirmed) — vLLM for real concurrency across max_sessions.
+# Launch it FIRST, on its own port, and cap its VRAM so STT+TTS still fit on the card:
+#   python -m vllm.entrypoints.openai.api_server \
+#     --model Qwen/Qwen3-14B-AWQ --port 8001 --max-model-len 12288 \
+#     ^ NOT 6144. vLLM fixes the context at launch, so MIN_CONTEXT cannot rescue it the
+#       way it does for Ollama — 6144 overflows the prompt and the agent loops mid-call.
+#     --gpu-memory-utilization 0.55        # ← vLLM defaults to 0.9 and starves Whisper/Parler
+# then swap the block above for:
+# llm:
+#   provider: vllm
+#   model: Qwen/Qwen3-14B-AWQ
+#   base_url: http://localhost:8001/v1
+#   temperature: 0.3
+#   timeout: 120
+#   retries: 2
+#   num_predict: 200         # → max_tokens
+#   # (num_ctx / keep_alive are Ollama-only; vLLM context = --max-model-len at launch)
+
+tts:
+  provider: indic_parler     # AI4Bharat Indic-Parler-TTS: ~21 Indian languages, FREE, real-time on GPU
+  device: cuda
+  cache: true
+  indic_description: "A clear, warm, natural female voice at a moderate pace; very high quality, no background noise."
+  # Voices are chosen live in the UI Voice dropdown (AI4Bharat group): Hindi·Divya, Telugu·Lalitha,
+  # Kannada·Anu, Tamil·Jaya, Bengali·Aditi, etc.
+
+# Grounding guard — same defaults as config.yaml, stated explicitly so a production
+# deploy never silently drifts. A bigger model hallucinates less, not never.
+guard:
+  enabled: true
+  check_numbers: true
+  check_repetition: true
+  check_script: true
+  min_script_share: 0.25
+  trim_truncated: true
+  log_only: false
+
+server:
+  host: 0.0.0.0
+  # THIS BINDS 0.0.0.0 — set a token or /transcripts and /bookings are refused,
+  # because they return caller PII (names, phone numbers, full transcripts).
+  admin_token: null          # e.g. a long random string, sent as X-Admin-Token
+
+  port: 8000
+  streaming: true
+  log_timings: true
+  synth_workers: 3
+  slow_filler_seconds: 2.0
+  max_sessions: 24
+  allow_clone: false         # disable the public /voice/clone endpoint in production
+  resume_ttl_seconds: 90
+  # ---- logging ----
+  log_level: INFO
+  log_file: logs/zensuvidha.log   # rotating file (5MB × 5)
+  log_json: false
+  log_transcripts: true
+
+default_pack: clinic
+
+# ── First-run notes ─────────────────────────────────────────────────────────────
+# Easiest path:  bash scripts/setup_gpu.sh     (preflight + deps + model pull)
+# then:          bash scripts/run_gpu.sh       (starts the app, with TLS if certs exist)
+#
+# 1) LLM:   ollama pull qwen3:14b
+# 2) TTS:   Indic-Parler is a GATED HF repo (~2GB) — `huggingface-cli login` and accept
+#           terms at huggingface.co/ai4bharat/indic-parler-tts. Needs a CUDA torch build
+#           plus requirements-voice.txt.
+# 3) STT:   faster-whisper on GPU needs cuDNN/cuBLAS (usually present with CUDA;
+#           otherwise `pip install nvidia-cudnn-cu12`).
+# 4) MIC:   browsers refuse getUserMedia on a plain http:// public IP. You MUST serve
+#           HTTPS to test voice — run_gpu.sh handles a self-signed cert, or put Caddy
+#           in front with a real domain for anything shareable.
+#
+# VRAM budget on an L40S (48GB): Qwen3-14B AWQ ~10GB + Whisper large-v3 ~3GB +
+# Indic-Parler ~3GB ≈ 16GB, leaving ~30GB. Qwen3-32B-AWQ (~19GB) also fits comfortably.
