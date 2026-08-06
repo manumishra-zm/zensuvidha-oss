@@ -5,12 +5,37 @@ no paid APIs, no GPU, no telephony account. It answers calls, books appointments
 answers questions from a deep knowledge base, and escalates to a human — and the
 **industry is a swappable data pack** (clinic, salon, restaurant, laundry, gym, hotel…).
 
+```mermaid
+flowchart TB
+  subgraph B["🖥  browser"]
+    direction LR
+    MIC["🎙 mic<br/><small>AGC off</small>"] --> VAD["Silero VAD<br/><small>turn-taking · barge-in</small>"]
+  end
+
+  subgraph S["⚙️  server · one process, no cloud"]
+    direction LR
+    ISO["isolate the caller<br/><small>pyannote + ERes2Net + ECAPA</small>"]
+    STT["faster-whisper"]
+    GATE["speaker gate<br/><small>is this the caller?</small>"]
+    LLM["Ollama · qwen3:4b<br/><small>JSON {say, action}</small>"]
+    GRD["grounding guard<br/><small>every sentence, before it is spoken</small>"]
+    TTS["streaming TTS<br/><small>Kokoro → system voice</small>"]
+    PACK[("Industry Pack<br/><small>packs/*.yaml + RAG-lite</small>")]
+    ISO --> STT --> GATE --> LLM --> GRD --> TTS
+    PACK -.->|"facts the reply must match"| LLM
+  end
+
+  VAD -->|"WAV over WebSocket"| ISO
+  TTS -->|"audio, sentence by sentence"| SPK["🔊 speaker"]
+
+  style ISO fill:#F6EFDC,stroke:#87621A
+  style GRD fill:#F7E7E4,stroke:#9E3A2E
+  style PACK fill:#F0EAF9,stroke:#7A4FB5
 ```
- mic ──▶ VAD ──▶ STT ──▶ LLM (+ Industry Pack + RAG) ──▶ streaming TTS ──▶ speaker
-        │        │        │                              │
-   turn-taking  faster-  Ollama (qwen3:4b)         say / Piper / Kokoro
-   + barge-in   whisper  JSON {say, action}          (many natural voices)
-```
+
+Isolation and the guard are the two boxes that took the longest and are the reason
+this works on a real call: one decides *whose* words reach the recogniser, the other
+decides whether a sentence is true enough to say out loud.
 
 Everything runs locally — the caller's data never leaves the machine (India-residency by construction).
 
@@ -129,6 +154,42 @@ Copy any pack, edit, restart — it appears in the CLI and UI automatically.
 
 ## How it works
 
+One WebSocket per call. The reply is generated *and spoken* sentence by sentence, so
+the caller hears sentence one while sentence two is still being written.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Caller
+    participant BR as Browser
+    participant SV as Server
+    participant M as Models
+
+    C->>BR: speaks
+    BR->>BR: biquad → Silero VAD → endpointer
+    Note over BR: latch guard: 7 s with no pause<br/>= not a person → discard, ask again
+
+    BR->>SV: WAV frame (~3 s)
+    SV->>M: pyannote segmentation + ERes2Net clustering
+    M-->>SV: who spoke, when
+    Note over SV: isolate on RAW audio —<br/>identity is worse on denoised (0.675 vs 0.596)
+
+    SV->>M: faster-whisper
+    M-->>SV: transcript (or dropped: no_speech / logprob / degeneracy)
+    SV->>M: ECAPA voiceprint
+    M-->>SV: is this the caller?
+
+    SV->>M: Qwen3 (streamed, forced JSON)
+    loop each finished sentence
+        M-->>SV: tokens
+        SV->>SV: guard — kind, echo, repetition,<br/>degeneracy, numbers, language
+        SV->>M: TTS for this sentence
+        SV-->>BR: audio + text
+        BR-->>C: plays while the rest generates
+    end
+    SV-->>BR: reply_end
+```
+
 | Concern | Approach |
 |---|---|
 | **Latency** | LLM streamed → each finished sentence is synthesised and played immediately (low time-to-first-audio). |
@@ -152,7 +213,7 @@ Copy any pack, edit, restart — it appears in the CLI and UI automatically.
 |---|---|
 | **[ARCHITECTURE.html](ARCHITECTURE.html)** | **The single technical sheet — start here.** Nine plates: topology, the signal chain for one turn, the identity gate, the whole open-source stack with what was rejected and why, the measured operating envelope, the latency budget, what is still not solved, and all nine diagrams rendered inline. Self-contained — it needs no network to draw itself. |
 | **[ARCHITECTURE.md](ARCHITECTURE.md)** | The same system in prose — every measurement behind every choice. |
-| **[docs/DIAGRAMS.md](docs/DIAGRAMS.md)** | The Mermaid **source** for those nine diagrams, rendering inline on GitHub: the call sequence, the isolation decision tree, the speaker-gate state machine, the noise router, the guard chain, TTS routing, the never-wedge protocol. |
+| **[docs/DIAGRAMS.md](docs/DIAGRAMS.md)** | All **nine** diagrams (three of them are above), rendering inline on GitHub: the call sequence, the isolation decision tree, the speaker-gate state machine, the noise router, the guard chain, TTS routing, the never-wedge protocol. |
 | **[ARCHITECTURE.excalidraw](ARCHITECTURE.excalidraw)** | The topology as an editable drawing — drop it on [excalidraw.com](https://excalidraw.com) to rearrange it. |
 | **[ARCHITECTURE-pipeline.excalidraw](ARCHITECTURE-pipeline.excalidraw)** | One voice turn as an editable drawing: all 14 stages, what feeds each, and the three never-wedge messages. |
 | **[docs/system.html](docs/system.html)** | The earlier pipeline walkthrough. `ARCHITECTURE.html` supersedes it. |
@@ -163,6 +224,31 @@ Everything else is judgement.
 ---
 
 ## The grounding guard (`zensuvidha/guard.py`)
+
+```mermaid
+flowchart LR
+  T["token stream"] --> K{kind}
+  K -->|"unknown /<br/>out_of_scope"| SAFE["pre-written refusal<br/>12 languages"]
+  K -->|answer| E{echo?}
+  E -->|"answering AS<br/>the caller"| SAFE
+  E -->|no| R{repeats<br/>last turn?}
+  R -->|yes| SAFE
+  R -->|no| D{degenerate?}
+  D -->|"a clause<br/>looping"| RETRY["close the stream,<br/>then retry"]
+  D -->|no| N{ungrounded<br/>number?}
+  N -->|"a price in neither<br/>the pack nor the call"| SAFE
+  N -->|no| L{wrong<br/>script?}
+  L -->|yes| SAFE
+  L -->|no| OK["speak it"]
+
+  style OK fill:#E6F1EB,stroke:#2A6B50
+  style SAFE fill:#F7E7E4,stroke:#9E3A2E
+  style RETRY fill:#F6EFDC,stroke:#87621A
+```
+
+It runs **on the token stream** — a bad sentence is intercepted before synthesis,
+because on a call you cannot un-say a price.
+
 
 Prompt rules do not hold a 4B model. Asked for a service the clinic doesn't offer, it
 would answer *"neurologist ka consultation fee ₹1,000 hai"* — a confident, fluent,
