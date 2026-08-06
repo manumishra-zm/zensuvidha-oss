@@ -39,6 +39,19 @@ decides whether a sentence is true enough to say out loud.
 
 Everything runs locally — the caller's data never leaves the machine (India-residency by construction).
 
+### See it working
+
+Two unedited recordings of a clinic booking, both with audio, in **[`demo/`](demo/)**:
+
+| | | |
+|---|---|---|
+| **[demo.mp4](demo/demo.mp4)** | 4 min 49 s | a full booking **with music playing in the background** — voice isolation on, inspector showing what it removed each turn |
+| **[demo2.mp4](demo/demo2.mp4)** | 4 min 07 s | the same flow recorded close to the screen, so the conversation and the per-turn inspector rows are readable |
+
+Worth watching for: the agent starts speaking before it has finished writing; it refuses
+to invent a slot list rather than making one up; and a turn it genuinely cannot hear is
+dropped and re-asked instead of answered. [What each is doing →](demo/README.md)
+
 ---
 
 ## Highlights
