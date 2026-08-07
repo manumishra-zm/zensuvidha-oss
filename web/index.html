@@ -100,11 +100,12 @@
   .t-keep{background:rgba(12,163,12,.16);color:#0f8a2c;}
   .t-drop{background:rgba(208,59,59,.16);color:#c0392b;}
   .t-info{background:var(--line2);color:var(--muted);}
+  .t-resc{background:rgba(191,138,10,.18);color:#9a6a05;}
   .insp-bar{display:flex;height:7px;border-radius:4px;overflow:hidden;background:var(--line2);gap:1px;}
   .insp-bar i{display:block;height:100%;}
   .b-keep{background:#0ca30c;} .b-drop{background:#d03b3b;}
   .insp-txt{color:var(--muted);margin-top:4px;line-height:1.35;}
-  @media (prefers-color-scheme:dark){ .t-keep{color:#5cd75c;} .t-drop{color:#ea7a7a;} }
+  @media (prefers-color-scheme:dark){ .t-keep{color:#5cd75c;} .t-drop{color:#ea7a7a;} .t-resc{color:#e0b350;} }
   #dfBtn[disabled]{opacity:.4;cursor:not-allowed;}
   .toggle{display:flex;align-items:center;justify-content:space-between;gap:8px;border:1px solid var(--line);border-radius:10px;padding:8px 11px;font-size:12.5px;font-weight:500;cursor:pointer;background:var(--input);color:var(--ink);}
   .toggle .pill{width:34px;height:19px;border-radius:20px;background:var(--pill);position:relative;transition:.18s;flex:none;}
@@ -1191,6 +1192,9 @@ function addInsight(m){
                 : m.speakers>1 ? `${m.speakers} voices` : '1 voice');
   }
   if(typeof m.similarity==='number') tag('t-info', `match ${m.similarity.toFixed(2)}`);
+  // The voiceprint refused this turn and the WORDS gave it back. Without this the
+  // row shows a low match score beside TRANSCRIBED and reads as a bug.
+  if(m.rescued) tag('t-resc','rescued');
   // The router decides per turn, so report what it DID, not what is switched on.
   if(m.denoise) tag('t-info', m.snr_db!=null ? `denoised · ${m.snr_db}dB room` : 'denoised');
   else if(m.snr_db!=null) tag('t-info', `${m.snr_db}dB room · clean enough`);
@@ -1228,6 +1232,7 @@ function addInsight(m){
     if(m.denoise) bits.push('background suppressed before transcription');
     if(!m.enrolled) bits.push('enrolling this caller');
     else if(!m.accepted) bits.push('not the caller — no reply');
+    else if(m.rescued) bits.push(`the voice did not match, but ${m.rescued} — answered anyway`);
   }
   if(m.heard) bits.push(`“${m.heard.slice(0,72)}”`);
   else if(!m.local && !m.speculative) bits.push('nothing recognisable in it');

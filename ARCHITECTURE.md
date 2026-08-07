@@ -296,7 +296,11 @@ Two of those exist purely so a call can never wedge:
   The caller sees the reply and hears nothing. Warned at boot; fixed only by the GPU
   preset with Indic-Parler.
 - **Loud audio at the mic destroys the voiceprint** (0.07 on the caller's own voice).
-  Mitigated — the latch guard cuts it and asks for a repeat — not solved.
+  Mitigated twice — the latch guard cuts it and asks for a repeat, and the expectation
+  rescue (`expectation.py`) answers a turn the voiceprint refused when the turn *is* the
+  answer we asked for, which needs no voiceprint at all. Still not solved: the acoustic
+  path is blind here, and the rescue only fires when we had asked a question with a
+  recognisable answer shape.
 - **Every remaining threshold is calibrated on synthetic speech.** A real microphone has
   already proved one wrong by more than 2×. Real recordings are the single
   highest-value missing input.

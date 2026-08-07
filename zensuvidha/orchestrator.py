@@ -15,6 +15,7 @@ import logging
 import re
 
 from .booking import create_booking
+from . import expectation
 from .guard import (GuardConfig, LANG_SCRIPT, TOKEN_FACTOR, ask_line, check_reply,
                     is_degenerate, looks_hinglish, looks_like_echo, norm_digits, numbers_in,
                     pack_numbers, safe_line)
@@ -496,6 +497,8 @@ class Session:
         self._last_atype = None                # action type of the previous turn
         self.slots: dict = {}                 # booking fields accumulated ACROSS turns (small
                                               #   models forget them, so the server remembers)
+        self.last_asked_slot = None           # what the caller was last ASKED — looser
+                                              #   than pending_slot, rescue-only
         self.pending_slot = None              # the field we last asked for out loud, so the
                                               #   caller's next short reply can answer it
         # Don't play "let me check…" twice running: on a slow box every reply trips the
@@ -511,6 +514,8 @@ class Session:
         self._was_denoised = False            # last router verdict (gives it hysteresis)
         self._voiceprint_n = 0                # utterances folded into the print so far
         self._gate_rejects = 0                # consecutive refusals — see check_speaker
+        self._last_rescue = None              # why the last refused turn was given
+                                              #   back, for the inspector; consumed once
         self._reject_vec = None               # embedding of the last refused turn
         self._rival = None                    # a second voice heard while the print was
         self._rival_n = 0                     #   still a guess — see check_speaker
@@ -1036,6 +1041,60 @@ class Session:
                     return field
         return None
 
+    def asked_which_slot(self, say: str):
+        """Which slot this line asks for — whether or not we already have it.
+
+        The sibling of `asks_for_known_slot`, which only looks at slots already filled
+        because its job is spotting a STALE re-ask. This one answers a different
+        question: what did the caller just get asked? Used only by the expectation
+        rescue, which fails safe, so a miss costs nothing and a wrong guess cannot
+        refuse anybody.
+        """
+        said = [w for w in _words(say or "") if len(w) >= 3]
+        if len(" ".join(said)) < 10:
+            return None
+        booking = self.pack.get("booking", {}) or {}
+        slot_q = booking.get("slots", {}) or {}
+        fields = booking.get("required", []) or []
+
+        # Exact first. The pack's slot questions are in the system prompt, so the model
+        # reproduces them verbatim most of the time and this is unambiguous.
+        n = " ".join(_words(say or ""))
+        for field in fields:
+            for variant in (slot_q.get(field), self.slot_question(field)):
+                if variant and " ".join(_words(variant)) == n:
+                    return field
+
+        # Then tolerantly, because the model does sometimes word its own question. The
+        # vocabulary comes from the PACK's phrasing, so this works for any pack and any
+        # language without a hand-written keyword list. Requires most of the question's
+        # distinctive words AND a clear winner: two fields tying means we cannot tell,
+        # and the rescue is better off with no answer than a wrong one.
+        said_set = set(said)
+        # Score each FIELD once. Scoring per variant made a field its own runner-up —
+        # `slot_q[field]` and `slot_question(field)` are usually the same string — so
+        # the tie-break could never be satisfied and this branch never fired.
+        per_field = {}
+        for field in fields:
+            variants = {v for v in (slot_q.get(field), self.slot_question(field)) if v}
+            scores = []
+            for variant in variants:
+                key = {w for w in _words(variant) if len(w) >= 3}
+                if len(key) >= 2:
+                    scores.append(len(key & said_set) / len(key))
+            if scores:
+                per_field[field] = max(scores)
+        if not per_field:
+            return None
+        ranked = sorted(per_field.items(), key=lambda kv: -kv[1])
+        best, best_score = ranked[0]
+        runner_up = ranked[1][1] if len(ranked) > 1 else 0.0
+        # A clear winner only. Two fields scoring alike means we cannot tell which was
+        # asked, and the rescue is better off with no answer than a wrong one.
+        if best_score >= 0.5 and best_score > runner_up:
+            return best
+        return None
+
     def recovery_line(self, kind: str = "") -> str:
         """What to say when a reply has been rejected.
 
@@ -1258,6 +1317,18 @@ class Session:
             say = safe_line("repeat", lang, self.pack, roman)
         if booked and f"#{action['booking_id']}" not in say:
             say = (say.rstrip(". ") + ". " if say else "") + self.booking_ref(action["booking_id"])
+
+        # What did the caller just get asked? `pending_slot` cannot answer this: it is
+        # deliberately left None whenever more than one field is outstanding, because
+        # filing an answer against the wrong slot is worse than not filing it. That is
+        # correct for COLLECTION and useless for the expectation rescue, which only
+        # needs to know what question the caller is replying to — and a booking spends
+        # most of its turns with several fields missing, so the rescue would almost
+        # never have fired.
+        #
+        # Derived from the FINAL spoken line, after verify(), because that is the
+        # sentence the caller actually heard and is answering.
+        self.last_asked_slot = self.pending_slot or self.asked_which_slot(say)
 
         self._remember_say(say)                      # so the next turn can spot a loop
         self._last_atype = action.get("type")        # was the previous turn a slot request?
@@ -1598,7 +1669,7 @@ class Session:
     def isolate_caller(self, audio):
         return self.clean_audio(audio)
 
-    def check_speaker(self, audio, speakers=None):
+    def check_speaker(self, audio, speakers=None, heard=None):
         """Is this the person whose call this is?
 
         `speakers` is how many voices diarization COUNTED in this clip, or None when
@@ -1612,10 +1683,20 @@ class Session:
         on a phone line that is by definition the person who rang. Everything after is
         compared against it, so a bystander or a television never becomes a turn.
 
+        `heard` is the transcript, when there is one. It is consulted ONLY on the
+        refusal path, as a second opinion the voiceprint cannot give: a turn that
+        answers the question we just asked is the caller even when the audio scores
+        badly. It can rescue a turn and never discard one — see `expectation.py`.
+
         Returns (accept, similarity). Accepts whenever it cannot judge: a false reject
         silences the actual caller, which is a far worse failure than letting one stray
         utterance through.
         """
+        # Cleared per judgement so it can never describe a PREVIOUS turn. The server
+        # consumes it on every accepted turn, so this is belt-and-braces — but a stale
+        # "rescued" tag in the inspector would be actively misleading, and the cost of
+        # preventing that is one assignment.
+        self._last_rescue = None
         if self.speaker_gate is None:
             return True, None
         from .speaker import MIN_ENROL_S
@@ -1759,9 +1840,36 @@ class Session:
                     self.voiceprint, self._voiceprint_n = None, 0
                     self._gate_rejects, self._reject_vec = 0, None
                     self._gate_turns = 0
-                    return self.check_speaker(audio, speakers)   # enrol on this utterance
+                    return self.check_speaker(audio, speakers, heard)  # enrol on this utterance
             else:
                 self._gate_rejects = 0
+            # LAST CHANCE, and the only one this signal gets: does the TURN look like
+            # the answer to the question we just asked out loud?
+            #
+            # The voiceprint has one failure it cannot see from the inside — loud audio
+            # at the mic drives the caller's score against their OWN voice to 0.07, at
+            # which point every refusal it makes is noise. This asks something the
+            # acoustics cannot: ten digits arriving straight after "may I have your
+            # mobile number?" is the caller, whatever ECAPA thinks of the recording.
+            #
+            # Rescue ONLY. It sits on the refusal path and nowhere else, so a wrong
+            # score here can never cost the caller a turn — only give one back.
+            if heard:
+                rescue, why = expectation.should_rescue(
+                    heard, self.pending_slot or self.last_asked_slot, self.pack,
+                    (self.pack.get("booking", {}) or {}).get("slot_aliases"))
+                if rescue:
+                    log.info("speaker: %.2f is below %.2f, but this turn IS the answer "
+                             "we asked for (%s) — accepting it",
+                             sim if sim is not None else -1,
+                             self.speaker_gate.threshold, why)
+                    # The refusal streak is deliberately NOT cleared: this turn is
+                    # evidence the PRINT is wrong, and `_gate_rejects` reaching
+                    # REENROL_AFTER is what repairs it. Clearing it here would trade a
+                    # permanent fix for a per-turn rescue, and the first turn that
+                    # happened not to match an expectation would be refused again.
+                    self._last_rescue = why
+                    return True, sim
             log.info("speaker: ignoring a different voice (similarity %.2f < %.2f)",
                      sim if sim is not None else -1, self.speaker_gate.threshold)
             return ok, sim

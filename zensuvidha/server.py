@@ -1349,7 +1349,7 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                     # audio only; a guess never mutates session state.
                     if heard and not speculative:
                         same, sim = await run_in_threadpool(
-                            session.check_speaker, audio, (dia or {}).get("speakers"))
+                            session.check_speaker, audio, (dia or {}).get("speakers"), heard)
                         if not same:
                             log.info("mic turn ignored: different speaker (sim=%.2f) %r",
                                      sim if sim is not None else -1,
@@ -1358,7 +1358,14 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                             spec["text"] = None
                             await _dropped(sock, "different speaker")
                             continue
-                        await _insight(accepted=True, similarity=sim, heard=heard)
+                        # `rescued` is set only when the gate refused on the audio and the
+                        # TURN gave it back. The operator needs to see that, or a call
+                        # that works for a reason they cannot observe looks like luck.
+                        # Consumed here so it describes THIS turn and never leaks to the
+                        # next one.
+                        rescued, session._last_rescue = session._last_rescue, None
+                        await _insight(accepted=True, similarity=sim, heard=heard,
+                                       rescued=rescued)
                     if speculative:
                         # Hold it. Nothing reaches the LLM until the endpoint is
                         # confirmed — the guard grounds numbers against the caller's

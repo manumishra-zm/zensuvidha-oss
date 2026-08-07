@@ -112,7 +112,8 @@ and on purpose.
  │      ├ no print         → enrol, accept                               │
  │      ├ never matched    → ACCEPT (hasn't earned the right to refuse)  │
  │      ├ not corroborated → forgive near misses, remember rivals        │
- │      └ proven + corroborated → now it may refuse                      │
+ │      ├ proven + corroborated → now it may refuse…                     │
+ │      └ …unless the TURN answers what we just asked → rescue (§4.3b)   │
  │11. LLM                Qwen3-4B, forced JSON, streamed   400–600 ms    │
  │12. GUARD per sentence kind→echo→repetition→degeneracy→               │
  │                       ungrounded numbers→language                     │
@@ -263,6 +264,61 @@ hears as part of the voice:
 The tell was that the score got **worse with more audio** (3.0 s → 0.507 against
 2.0 s → 0.818). When a metric degrades as data increases, suspect the preprocessing, not
 the model.
+
+---
+
+### 4.3b Expectation rescue — a second opinion, alongside the voiceprint
+
+**Nothing above changes.** pyannote, ERes2Net, ECAPA and DeepFilterNet all do exactly
+what they did; this adds one more signal, consulted only where the gate has already
+decided to refuse.
+
+**Role.** The acoustic path has one failure it cannot see from the inside: loud audio at
+the microphone drives the caller's score against their **own** voice to `0.07`. At that
+point the similarity number is not imprecise, it is uninformative — and every refusal
+made on it is noise. This asks something the acoustics cannot:
+
+```
+   the gate refused on the audio
+              │
+              ▼
+   does this turn ANSWER the question we just asked?
+              │
+     ┌────────┴────────┐
+     │                 │
+   yes                 no
+     │                 │
+  give the turn      nothing happens —
+  back               the gate's verdict stands
+```
+
+Ten digits arriving right after *"what mobile number should we use?"* is the caller,
+whatever ECAPA thinks of the recording — and that judgement never touches the voiceprint,
+so it survives exactly the case that breaks it.
+
+**Why it can only rescue.** Callers say things with no bearing on the business at all —
+*"hello?"*, *"can you hear me?"*, *"haan"*, *"my son has a fever"*. A relevance threshold
+that rejected those would repeat the mistake the 0.55 speaker threshold made, in a domain
+where the caller has no way to try harder. So there is no path from this module to a
+rejection, and the test suite pins that structurally rather than assuming it.
+
+**What counts, and how much.** Scores accumulate, so two independent medium signals can
+rescue where no single weak one can:
+
+```
+   STRONG  1.00   the exact number we asked for · one of the pack's own proper nouns
+   MEDIUM  0.50   a time expression on cue · two of the business's own terms
+   WEAK    0.25   a short non-question when we asked for a name · one business term
+                                                              rescue at >= 1.00
+```
+
+**The part that nearly made it useless.** `pending_slot` is deliberately left `None`
+whenever more than one field is outstanding — filing an answer against the wrong slot is
+worse than not filing it. Correct for collection, and it meant the rescue would almost
+never have fired, because a booking spends most of its turns with several fields missing.
+A separate `last_asked_slot`, derived from the line the caller actually *heard*, fixes
+that without touching the stricter semantics collection depends on. Found by an
+end-to-end probe; the unit tests had been setting the slot by hand and passed either way.
 
 ---
 

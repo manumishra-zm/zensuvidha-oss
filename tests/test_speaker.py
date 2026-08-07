@@ -659,3 +659,76 @@ def test_matching_once_earns_the_right_to_refuse():
 def test_both_gates_open_before_a_stranger_is_refused():
     s = _corroborated(StubGate())                  # proven AND corroborated
     assert not s.check_speaker("a stranger", speakers=1)[0]
+
+
+# --------------------------------------------------------------------------- #
+# the expectation rescue — a SECOND opinion, alongside the voiceprint
+#
+# pyannote, ERes2Net, ECAPA and DeepFilterNet are untouched by this; it only runs on
+# the path where the gate has already decided to refuse. The property under test is
+# therefore one-directional: it may give a turn back, and may never take one away.
+# --------------------------------------------------------------------------- #
+def test_a_refused_turn_that_answers_our_question_is_rescued():
+    """The documented unsolved limit: loud audio at the mic drives the caller's score
+    against their OWN voice to 0.07, at which point every refusal is noise. The turn
+    still carries the ten digits we just asked for, and that does not need the audio."""
+    s = _corroborated(StubGate())
+    s.pending_slot = "phone"
+    refused, _ = s.check_speaker("a completely different voice")
+    assert not refused, "precondition: the gate refuses this voice on the audio alone"
+
+    ok, _ = s.check_speaker("a completely different voice", heard="8920429057")
+    assert ok, "a turn carrying the number we asked for must be given back"
+
+
+def test_the_rescue_does_not_clear_the_refusal_streak():
+    """The rescue hands back the TURN; it must not hide the fact that the print is
+    wrong. `_gate_rejects` reaching REENROL_AFTER is what repairs the print, and
+    clearing it would trade a permanent fix for a per-turn rescue — the first turn
+    that happened not to match an expectation would be refused again."""
+    s = _corroborated(StubGate())
+    s.pending_slot = "phone"
+    s.check_speaker("stranger", heard="8920429057")
+    assert s._gate_rejects > 0, "the refusal must still count toward re-enrolment"
+
+
+def test_the_rescue_cannot_refuse_a_turn_the_gate_accepted():
+    """One-directional, by construction. An accepted turn must be unaffected no matter
+    what the transcript says — including a transcript with no bearing on the business."""
+    for heard in (None, "", "and now the weather across the region", "haan",
+                  "my son has a fever", "!@#$"):
+        s = _corroborated(StubGate())
+        s.pending_slot = "phone"
+        ok, sim = s.check_speaker("caller", heard=heard)
+        assert ok, f"the caller was refused with heard={heard!r}"
+
+
+def test_a_stranger_saying_something_irrelevant_is_still_refused():
+    s = _corroborated(StubGate())
+    s.pending_slot = "phone"
+    ok, _ = s.check_speaker("stranger", heard="and then he told me about the match")
+    assert not ok
+
+
+def test_no_transcript_leaves_the_gate_exactly_as_it_was():
+    """Every existing caller passes no `heard`. Their behaviour must be byte-identical,
+    which is what makes this additive rather than a rewrite."""
+    a = _corroborated(StubGate())
+    b = _corroborated(StubGate())
+    a.pending_slot = b.pending_slot = "phone"
+    assert a.check_speaker("stranger") == b.check_speaker("stranger", heard=None)
+
+
+def test_the_rescue_reason_is_recorded_for_the_inspector_and_consumed_once():
+    """A rescue that only reaches the server log is invisible to whoever is debugging
+    the call. It must be reported — and must describe THIS turn, never leak to the next."""
+    s = _corroborated(StubGate())
+    s.pending_slot = "phone"
+    assert s._last_rescue is None
+
+    ok, _ = s.check_speaker("stranger", heard="8920429057")
+    assert ok and s._last_rescue and "digit" in s._last_rescue
+
+    s._last_rescue = None                      # server consumes it after one insight
+    s.check_speaker("caller", heard="8920429057")
+    assert s._last_rescue is None, "an ACCEPTED turn must not report a rescue"

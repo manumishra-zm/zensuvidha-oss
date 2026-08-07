@@ -250,6 +250,7 @@ sequenceDiagram
 | **Voice isolation** | A colleague or a TV talking in a gap used to drag whole-clip similarity 0.867 → 0.34 and the caller's own turn was thrown away. Segmentation (pyannote-3.0) + clustering (ERes2Net) + an ECAPA second opinion now trim the turn to the caller. All 9 interference shapes clean. |
 | **Noise** | Rejection-first, not reduction-first. Auto-denoise is **off**: swept across 30 conditions DeepFilterNet won 1, lost 8, tied 21 — it costs accuracy *and* 226–475 ms. The toggle stays for A/B. |
 | **Speaker ID** | The gate must *earn* the right to refuse — it has to match the caller once on this call first. The 0.55 threshold was calibrated on synthetic voices; a real mic gives the same speaker 0.27–0.41. |
+| **Expectation rescue** | A second opinion on identity, *alongside* the voiceprint — pyannote, ERes2Net, ECAPA and DeepFilterNet are unchanged. Loud audio drives the caller's score against their **own** voice to 0.07, at which point every refusal is noise; a turn carrying the ten digits we just asked for is the caller whatever the audio says. It can only ever **rescue** a turn, never discard one. |
 | **Never wedged** | `commit_miss` and `turn_dropped` exist so no path can leave the caller watching a spinner. A caller who says nothing is re-prompted at 30 s and released at 75 s. |
 
 ### Where the documentation is
