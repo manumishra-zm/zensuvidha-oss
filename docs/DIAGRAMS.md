@@ -1,7 +1,9 @@
 # ZenSuvidha OSS — Diagrams
 
 Every diagram here renders on GitHub. They are the same system described in
-[ARCHITECTURE.md](../ARCHITECTURE.md); this file is the visual index. For the whole
+[ARCHITECTURE.md](../ARCHITECTURE.md); this file is the visual index. For what each
+box is *doing* — and the algorithms inside the audio models — see
+[EXPLAINED.md](EXPLAINED.md). For the whole
 thing laid out as one page — including these nine, pre-rendered so they need no
 network — open [../ARCHITECTURE.html](../ARCHITECTURE.html); to move
 the boxes around yourself, open [../ARCHITECTURE.excalidraw](../ARCHITECTURE.excalidraw)

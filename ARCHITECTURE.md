@@ -38,6 +38,9 @@ One WebSocket per call. Audio goes up as WAV frames; replies come back as JSON c
 messages interleaved with binary audio, so the caller hears sentence 1 while sentence 2
 is still being generated.
 
+> **[docs/EXPLAINED.md](docs/EXPLAINED.md)** is the component-by-component walkthrough —
+> why each choice beat its alternatives, and how pyannote, ECAPA and DeepFilterNet
+> actually work (cut vs mask, powerset classification, ERB gains + complex deep filtering).
 > **[ARCHITECTURE.html](ARCHITECTURE.html)** is this whole document as one laid-out
 > technical sheet — the topology, the signal chain, the stack table, the measured
 > envelope, the latency budget and all nine diagrams rendered inline, in a browser.

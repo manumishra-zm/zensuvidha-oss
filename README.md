@@ -257,6 +257,7 @@ sequenceDiagram
 | File | What it is |
 |---|---|
 | **[ARCHITECTURE.html](ARCHITECTURE.html)** | **The single technical sheet — start here.** Nine plates: topology, the signal chain for one turn, the identity gate, the whole open-source stack with what was rejected and why, the measured operating envelope, the latency budget, what is still not solved, and all nine diagrams rendered inline. Self-contained — it needs no network to draw itself. |
+| **[docs/EXPLAINED.md](docs/EXPLAINED.md)** | **The walkthrough.** Every component: what it is for, why that one and not the alternatives, and how the audio models actually work at the algorithm level — powerset segmentation, attentive statistics pooling, ERB gains and complex deep filtering. ASCII diagrams throughout. |
 | **[ARCHITECTURE.md](ARCHITECTURE.md)** | The same system in prose — every measurement behind every choice. |
 | **[docs/DIAGRAMS.md](docs/DIAGRAMS.md)** | All **nine** diagrams (three of them are above), rendering inline on GitHub: the call sequence, the isolation decision tree, the speaker-gate state machine, the noise router, the guard chain, TTS routing, the never-wedge protocol. |
 | **[ARCHITECTURE.excalidraw](ARCHITECTURE.excalidraw)** | The topology as an editable drawing — drop it on [excalidraw.com](https://excalidraw.com) to rearrange it. |
