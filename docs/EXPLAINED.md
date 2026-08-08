@@ -1008,6 +1008,24 @@ almost no characters. That is the gap the neural backend closes, and requiring a
 of weights to answer *"what are your timings"* is the wrong default for a project whose
 whole premise is running on a laptop.
 
+### What made it affordable
+
+`load_pack()` re-read and re-merged two YAML files on **every session** — 51 ms, paid at
+exactly the moment a caller is waiting for a greeting — and returned a fresh dict, which
+threw away everything derived from it. The semantic index and the expectation vocabulary
+both live on the pack, so both rebuilt per call.
+
+```
+   load_pack   51.07 ms  →  0.13 ms      cached on (path, mtime)
+   index_for    4.17 ms  →  0.12 ms      no longer rebuilt per session
+   test suite     ~26 s  →   2.45 s      as a side effect
+```
+
+Keyed on modification time rather than name, so editing a pack during development still
+takes effect on the next call without a restart. Packs are now **shared between
+concurrent calls**, which is only safe because nothing writes per-session state into
+them — a test walks the AST of every module to keep it that way.
+
 ### The other two uses of the same index
 
 **Ranking.** Measured on the shipping retriever: rank 1 was always the business *name*

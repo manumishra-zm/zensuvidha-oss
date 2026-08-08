@@ -135,3 +135,66 @@ def test_answer_in_falls_back_to_english_when_the_language_is_missing():
     assert S.answer_in(e, "hi") == "हिंदी उत्तर"
     assert S.answer_in(e, "te") == "English answer"      # no a_te → English, not silence
     assert S.answer_in(e, None) == "English answer"
+
+
+# ── the pack cache, which is what makes all of this affordable ────────────────
+
+def test_the_pack_is_cached_across_sessions():
+    """Measured at 51ms per call — two YAML reads and a deep merge — paid on EVERY
+    session, at the moment the caller is waiting for a greeting. It also discarded the
+    structures derived from the pack, so the semantic index and the expectation
+    vocabulary rebuilt per call too."""
+    import time
+    load_pack("clinic")                       # warm
+    t = time.perf_counter()
+    for _ in range(50):
+        load_pack("clinic")
+    per = (time.perf_counter() - t) / 50
+    assert per < 0.005, f"{per*1000:.1f}ms per load — the cache is not working"
+    assert load_pack("clinic") is load_pack("clinic")
+
+
+def test_editing_a_pack_still_takes_effect_without_a_restart():
+    """Keyed on modification time, not name — otherwise a pack edited during
+    development would be invisible until the server was restarted."""
+    import os
+    import pathlib as _p
+    f = _p.Path("packs/clinic.yaml")
+    before = load_pack("clinic")
+    mt = f.stat().st_mtime
+    try:
+        f.touch()
+        assert load_pack("clinic") is not before, "an edited pack was served from cache"
+    finally:
+        os.utime(f, (mt, mt))
+
+
+def test_nothing_mutates_a_shared_pack_except_the_derived_caches():
+    """Packs are now SHARED between concurrent calls. That is only safe because nothing
+    writes per-session state into them — if anything did, one caller's state would
+    appear in another's prompt."""
+    import ast
+    import pathlib as _p
+    allowed = {"_semantic_index", "_expectation_vocab"}
+    for path in _p.Path("zensuvidha").glob("*.py"):
+        if path.name == "packs.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(node, ast.Assign):
+                continue
+            for tgt in node.targets:
+                if (isinstance(tgt, ast.Subscript)
+                        and isinstance(tgt.value, ast.Attribute)
+                        and tgt.value.attr == "pack"):
+                    key = getattr(getattr(tgt.slice, "value", None), "__str__", lambda: "?")()
+                    assert key in allowed or "_" in str(key), (
+                        f"{path.name} writes {key!r} into a shared pack")
+
+
+def test_the_cache_is_bounded():
+    """One entry per pack per edit. Unbounded, a pack edited in a loop during
+    development would grow it without limit."""
+    from zensuvidha import packs
+    assert "_PACK_CACHE" in dir(packs)
+    src = open(packs.__file__, encoding="utf-8").read()
+    assert "_PACK_CACHE.clear()" in src, "the cache has no bound"
