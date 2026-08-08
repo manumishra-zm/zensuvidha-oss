@@ -28,6 +28,22 @@ threshold made, in a domain where the caller has no way to try harder.
 
 There is no path from this module to a rejection, and `test_expectation.py` pins that by
 asserting it over the whole corpus of things callers actually say.
+
+What it does NOT do
+-------------------
+It never reaches the audio. Its only import is `re`, its only input is a transcript STT
+has already produced, and it runs after every filtering decision has been made — so it
+cannot cause a single sample of the caller's voice to be removed. A rescued turn does not
+widen or move the voiceprint either, which matters because the voiceprint is what
+isolation trims against: moving it on text evidence would spread into what LATER turns
+keep.
+
+The one indirect path, stated plainly: rescued turns still count toward `_gate_rejects`,
+so a RUN of them can trigger the pre-existing re-enrolment repair. That is intended — it
+is how a caller whose print was destroyed gets a correct one back, and suppressing it
+would trade a permanent fix for a per-turn rescue. It is not a new hole: the repair has
+always required the same voice refused repeatedly, and it still refuses to learn from a
+clip known to hold more than one voice. Both halves are pinned by tests.
 """
 from __future__ import annotations
 

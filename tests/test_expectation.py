@@ -305,3 +305,193 @@ def test_a_tie_between_two_slots_yields_no_answer():
                                   "name": "please tell me the detail"}
     s.pack["booking"]["required"] = ["phone", "name"]
     assert s.asked_which_slot("please tell me the detail now") is None
+
+
+
+# a stub encoder, so this file needs no 80MB download and no sibling test module
+class _Stub:
+    backend, threshold = "stub", 0.55
+
+    def __init__(self):
+        self._v = {}
+
+    def embed(self, audio, min_seconds=0.6):
+        import numpy as np
+        k = audio if isinstance(audio, str) else bytes(audio).decode("utf8", "ignore")
+        if k not in self._v:
+            r = np.random.default_rng(abs(hash(k)) % 2 ** 31)
+            v = r.normal(size=192).astype("float32")
+            self._v[k] = v / np.linalg.norm(v)
+        return self._v[k]
+
+    def similarity(self, a, b):
+        import numpy as np
+        return float(np.dot(a, b))
+
+    def matches(self, print_, audio, **kw):
+        v = self.embed(audio)
+        if v is None:
+            return True, None
+        sim = self.similarity(print_, v)
+        return sim >= self.threshold, sim
+
+    def judge(self, print_, audio):
+        ok, sim = self.matches(print_, audio)
+        return ok, sim, self.embed(audio)
+
+
+def _corroborated_session(who="caller"):
+    """A session whose voiceprint the caller has actually confirmed — the gate refuses
+    nobody until then, so a test about refusal must establish one first."""
+    from zensuvidha.orchestrator import Session
+    from zensuvidha.packs import load_pack
+    s = Session(load_pack("clinic"), None, speaker_gate=_Stub())
+    for _ in range(s.VOICEPRINT_TRUST_N + 1):
+        s.check_speaker(who, speakers=1)
+    assert s._gate_proven
+    return s
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CONTAINMENT — the two things this must never do:
+#   (a) cause the caller's real voice or words to be filtered/removed
+#   (b) let a TEXT judgement feed back into the AUDIO subsystem
+#
+# Both are pinned behaviourally, not by reading the code, because the danger is a
+# future edit that looks harmless.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_the_module_cannot_touch_audio_or_a_model_at_all():
+    """Its only import is `re`. No audio buffer, no encoder, no LLM, no numpy.
+
+    This is the structural guarantee behind everything below: a module that cannot
+    reach the audio path cannot degrade it, whatever its scoring does.
+    """
+    import ast, pathlib
+    tree = ast.parse(pathlib.Path(X.__file__).read_text())
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported |= {a.name.split(".")[0] for a in node.names}
+        elif isinstance(node, ast.ImportFrom):
+            imported.add((node.module or "").split(".")[0])
+    assert imported <= {"re", "__future__"}, f"expectation.py grew an import: {imported}"
+
+    banned = ("numpy", "soundfile", "torch", "speechbrain", "sherpa", "librosa",
+              "llm", "ollama", "diarize", "speaker", "pipeline", "stt")
+    src = pathlib.Path(X.__file__).read_text().lower()
+    for name in banned:
+        assert f"import {name}" not in src, f"expectation.py reached for {name}"
+
+
+def test_it_never_receives_audio_so_it_cannot_alter_it():
+    """No parameter carries a signal. The rescue is handed a transcript, which STT has
+    already produced — it is downstream of every audio decision and cannot revisit one."""
+    import inspect
+    params = set(inspect.signature(X.should_rescue).parameters)
+    assert params == {"text", "pending_slot", "pack", "aliases"}
+    assert not (params & {"audio", "pcm", "wav", "samples", "signal"})
+
+
+def test_a_rescue_does_not_move_the_voiceprint():
+    """THE feedback loop to avoid. Accepting a turn on TEXT evidence and then folding
+    its AUDIO into the voiceprint would let a wrong-but-well-worded turn drag the
+    caller's acoustic identity — and the voiceprint is what isolation trims against, so
+    the damage would spread into what future turns keep."""
+    import numpy as np
+
+    s = _corroborated_session()
+    s.pending_slot = "phone"
+    before = np.array(s.voiceprint, copy=True)
+    n_before = s._voiceprint_n
+
+    ok, _ = s.check_speaker("a voice that is NOT the caller", heard="8920429057")
+    assert ok, "precondition: the rescue fired"
+    assert np.array_equal(s.voiceprint, before), "the rescue moved the voiceprint"
+    assert s._voiceprint_n == n_before, "the rescue corroborated the print"
+
+
+def test_a_run_of_rescues_may_REPAIR_the_print_but_only_under_the_existing_guard():
+    """The one indirect path from text back to audio — found by this test, not by
+    reading the code, and worth stating precisely rather than pretending it is absent.
+
+    A single rescue never moves the voiceprint (above). But rescued turns deliberately
+    still count toward `_gate_rejects`, so after REENROL_AFTER of them the PRE-EXISTING
+    repair fires and re-enrols. That is the intended outcome for the case this feature
+    exists for: the caller's print was destroyed by loud audio, they keep answering our
+    questions, and the print gets rebuilt from how they actually sound now. Suppressing
+    it would trade a permanent fix for a per-turn rescue.
+
+    It is not a new hole. The repair has always required the SAME voice refused
+    repeatedly, and it still refuses to learn from a clip known to hold more than one
+    voice — a blend of two people must never become the caller's identity. Both halves
+    are pinned here, because a future edit relaxing either would matter.
+    """
+    import numpy as np
+
+    # (a) with one voice in the clip, a run of rescues repairs the print
+    s = _corroborated_session()
+    s.pending_slot = "phone"
+    before = np.array(s.voiceprint, copy=True)
+    for _ in range(s.REENROL_AFTER + 1):
+        s.check_speaker("one consistent voice", speakers=1, heard="8920429057")
+    assert not np.array_equal(s.voiceprint, before), (
+        "the repair never fired — a caller whose print was destroyed would be stuck "
+        "depending on every future turn happening to match an expectation")
+
+    # (b) with TWO voices in the clip it must refuse to learn, rescued or not
+    s2 = _corroborated_session()
+    s2.pending_slot = "phone"
+    before2 = np.array(s2.voiceprint, copy=True)
+    for _ in range(s2.REENROL_AFTER + 3):
+        s2.check_speaker("a mixture of two people", speakers=2, heard="8920429057")
+    assert np.array_equal(s2.voiceprint, before2), (
+        "a clip holding two voices was enrolled as the caller — the rescue must not "
+        "weaken the guard that stops a blend becoming somebody's identity")
+
+
+def test_a_rescue_never_causes_more_audio_to_be_removed():
+    """Isolation trims against the voiceprint, so the only way this feature could cost
+    the caller their own words is by moving that print on a single turn. It does not."""
+    import numpy as np
+
+    s = _corroborated_session()
+    s.pending_slot = "phone"
+    before = np.array(s.voiceprint, copy=True)
+    ok, _ = s.check_speaker("some other voice", speakers=1, heard="8920429057")
+    assert ok
+    assert np.array_equal(s.voiceprint, before)
+
+
+def test_adding_a_transcript_can_only_turn_a_NO_into_a_YES():
+    """Monotonicity, over the whole corpus. `heard` may flip False→True and must never
+    flip True→False, so no caller can lose a turn they would otherwise have kept."""
+    voices = ["caller", "stranger", "another stranger"]
+    texts = [None, "", "8920429057", "Dr Anil Sharma", "haan", "my son has a fever",
+             "and now the weather", "!@#$", "a" * 3000]
+    for voice in voices:
+        for slot in (None, "phone", "name", "datetime", "doctor"):
+            base = _corroborated_session()
+            base.pending_slot = slot
+            without, _ = base.check_speaker(voice)
+            for t in texts:
+                s = _corroborated_session()
+                s.pending_slot = slot
+                with_text, _ = s.check_speaker(voice, heard=t)
+                assert with_text or not without, (
+                    f"heard={t!r} turned an ACCEPT into a REFUSAL "
+                    f"(voice={voice!r}, slot={slot!r})")
+
+
+def test_the_rescue_runs_after_stt_so_it_cannot_affect_what_whisper_saw():
+    """Ordering, pinned in the server source. Isolation and denoise both run inside
+    `pipeline.prepare`, before transcription; the gate — and therefore the rescue —
+    only sees the transcript afterwards. There is no path back."""
+    import inspect
+    from zensuvidha import server
+    src = inspect.getsource(server)
+    prepare_at = src.index("session.clean_audio")     # isolation + denoise
+    gate_at = src.index("session.check_speaker")      # …then, and only then, identity
+    assert prepare_at < gate_at, (
+        "the speaker gate must run AFTER the audio pipeline, or a text judgement "
+        "could reach back into filtering")

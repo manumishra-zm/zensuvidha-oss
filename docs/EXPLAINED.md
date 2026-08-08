@@ -302,6 +302,26 @@ that rejected those would repeat the mistake the 0.55 speaker threshold made, in
 where the caller has no way to try harder. So there is no path from this module to a
 rejection, and the test suite pins that structurally rather than assuming it.
 
+**What it cannot do.** Two containment properties, both pinned by tests rather than
+asserted:
+
+```
+  it never reaches the audio       only import is `re`; only input is a transcript STT
+                                   has already produced; runs AFTER every filtering
+                                   decision → it cannot remove one sample of the caller
+
+  a rescue never moves the print   the voiceprint is what isolation trims against, so
+                                   moving it on TEXT evidence would spread into what
+                                   LATER turns keep. It does not.
+```
+
+The one indirect path, stated plainly rather than hidden: rescued turns still count
+toward the refusal streak, so a *run* of them can trigger the pre-existing re-enrolment
+repair. That is intended — it is how a caller whose print was destroyed gets a correct
+one back. It is not a new hole either: the repair has always needed the same voice
+refused repeatedly, and it still refuses to learn from a clip known to hold more than one
+voice, so a blend of two people cannot become somebody's identity.
+
 **What counts, and how much.** Scores accumulate, so two independent medium signals can
 rescue where no single weak one can:
 
