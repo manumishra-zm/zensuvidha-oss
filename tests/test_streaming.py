@@ -700,3 +700,117 @@ def test_a_remote_client_needs_the_right_token():
         assert not server._authorised(_fake_request("10.0.0.9"))
     finally:
         server._ADMIN_TOKEN = old
+
+
+# --------------------------------------------------------------------------- #
+# Predictive endpointing — silence cannot tell "finished" from "thinking", words can
+# --------------------------------------------------------------------------- #
+def test_a_finished_phone_number_closes_the_turn_early():
+    from zensuvidha.guard import looks_complete
+    assert looks_complete("8920429057", expect_phone=True)
+    assert looks_complete("my number is 8920429057", expect_phone=True)
+
+
+def test_a_bare_yes_or_no_closes_the_turn_early():
+    """Waiting 1200ms for a word that is already finished is most of what makes a call
+    feel slow — "haan" admits no continuation."""
+    from zensuvidha.guard import looks_complete
+    for word in ("haan", "yes", "हाँ", "no", "nahi", "ఆమ్", "ok"):
+        if word == "ఆమ్":
+            continue                       # not in the list; the point is the shape
+        assert looks_complete(word), f"{word!r} should close early"
+
+
+@pytest.mark.parametrize("text,phone", [
+    ("892042", True),                      # a number still being read out
+    ("मेरा नाम", False),                    # an announcing noun phrase
+    ("Manu", False),                       # a first name — "Mishra" may follow
+    ("tomorrow", False),                   # "morning" may follow
+    ("yes I would like to book an appointment", False),
+    ("ठीक है", False),                      # a pair where only one word is terminal
+    ("", False),
+])
+def test_it_never_closes_early_on_something_that_may_continue(text, phone):
+    """The two mistakes are not symmetrical. A false "incomplete" costs a pause; a
+    false "complete" chops the sentence in half — the failure the endpointer has
+    already been tuned twice to avoid."""
+    from zensuvidha.guard import looks_complete
+    assert not looks_complete(text, expect_phone=phone)
+
+
+def test_complete_and_incomplete_are_never_both_true():
+    from zensuvidha.guard import looks_complete, looks_incomplete
+    probes = ["haan", "8920429057", "892042", "मेरा नाम", "yes please book it",
+              "Manu", "", "tomorrow morning", "what are your timings?"]
+    for t in probes:
+        for phone in (True, False):
+            assert not (looks_complete(t, expect_phone=phone)
+                        and looks_incomplete(t, expect_phone=phone)), t
+
+
+def test_the_client_prefers_the_conservative_hint():
+    """`holdForMore` must win over `settled`. If the server ever sent both, closing
+    early is the one that can chop a sentence."""
+    import pathlib
+    js = pathlib.Path("web/index.html").read_text()
+    assert "if(settled && !holdForMore) return SETTLED_MS;" in js, (
+        "the early close must be gated on holdForMore being false")
+
+
+def test_the_settled_hint_is_cleared_not_latched():
+    """holdForMore once latched on, so a single mid-sentence guess added HOLD_EXTRA_MS
+    to every remaining endpoint of the call. The same bug in reverse would be worse."""
+    import pathlib
+    js = pathlib.Path("web/index.html").read_text()
+    assert "settled = (m.settled===true);" in js, "settled must be assigned, not OR-ed"
+
+
+# --------------------------------------------------------------------------- #
+# Backchannels — the "mm-hm" a listener makes while the OTHER person is talking
+# --------------------------------------------------------------------------- #
+def test_a_backchannel_exists_for_every_language_we_speak():
+    from zensuvidha.server import _BACKCHANNELS
+    from zensuvidha.guard import SAFE_LINES
+    missing = set(SAFE_LINES) - set(_BACKCHANNELS)
+    assert not missing, f"no listening noise for {missing}"
+
+
+def test_it_is_one_short_word_not_a_sentence():
+    """Anything longer stops being a listening noise and becomes an interruption — the
+    caller stops to let us finish, then has to restart their sentence."""
+    from zensuvidha.server import _BACKCHANNELS
+    for lang, phrase in _BACKCHANNELS.items():
+        assert len(phrase.split()) <= 2, f"{lang}: {phrase!r} is too long to murmur"
+        assert len(phrase) <= 12, f"{lang}: {phrase!r} is too long"
+
+
+def test_it_never_falls_back_to_english_mid_call():
+    """Dropping an English "mm-hm" into a Telugu call breaks the single-language rule
+    the fillers already observe."""
+    from zensuvidha.server import _backchannel_for
+    assert _backchannel_for("Telugu") is not None
+    assert _backchannel_for("Swahili") is None       # unknown → silence, not English
+
+
+def test_the_client_gates_it_on_every_condition_that_stops_it_interrupting():
+    """Each guard removes a way this becomes an interruption rather than a murmur.
+    Losing any one of them is the difference between natural and infuriating."""
+    import pathlib
+    js = pathlib.Path("web/index.html").read_text()
+    for guard, why in [
+        ("bcUsedThisTurn", "at most once per turn"),
+        ("uttMs < BACKCHANNEL_AFTER_MS", "only on a turn long enough to feel unattended"),
+        ("silenceMs < BACKCHANNEL_PAUSE_MS", "only into a real pause, never over a word"),
+        ("agentLevel() > 0.001", "never while we are already speaking"),
+    ]:
+        assert guard in js, f"the backchannel lost its guard: {why}"
+    assert "bcUsedThisTurn=false" in js, "the once-per-turn flag is never reset"
+
+
+def test_the_backchannel_is_ducked():
+    """A listener murmurs; they do not announce."""
+    import pathlib
+    import re
+    js = pathlib.Path("web/index.html").read_text()
+    m = re.search(r"BACKCHANNEL_GAIN\s*=\s*([0-9.]+)", js)
+    assert m and float(m.group(1)) < 0.5, "the listening noise is as loud as speech"

@@ -196,11 +196,14 @@ def test_pending_slot_is_still_live_when_the_gate_runs():
     from zensuvidha import server
 
     src = inspect.getsource(server)
+    # Anchored on the DISPATCH, not on a signature. The first version matched the exact
+    # argument list of `_stream_turn`, so adding a parameter to it broke this test for
+    # a reason that had nothing to do with the ordering it exists to protect.
     gate_at = src.index("session.check_speaker")
-    turn_at = src.index("await _stream_turn(sock, session, text, heard)")
+    turn_at = src.index("await launch(heard, heard")
     assert gate_at < turn_at, (
-        "check_speaker must run BEFORE _stream_turn, or pending_slot is already "
-        "cleared and the expectation rescue can never fire")
+        "the speaker gate must run BEFORE the turn is launched, or pending_slot is "
+        "already cleared and the expectation rescue can never fire")
 
 
 def test_nothing_unexpected_clears_pending_slot():

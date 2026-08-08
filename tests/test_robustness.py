@@ -773,3 +773,78 @@ def test_barge_in_does_not_depend_on_browser_echo_cancellation():
     guard = html.split("SELF-ECHO GUARD")[1].split("if(speaking){ bargeMs+=ms")[0]
     assert "agentLevel()*ECHO_MARGIN" in guard, "the bar is not relative to our own output"
     assert "return;" in guard, "a suspected echo still reaches the barge-in counter"
+
+
+# --------------------------------------------------------------------------- #
+# SNR-aware repair — say WHY you could not hear, not just "say that again"
+# --------------------------------------------------------------------------- #
+def test_the_repair_line_reflects_how_the_room_actually_sounded():
+    """A person tells you why they cannot hear you. Repeating into a fan does not
+    help, so "could you move somewhere quieter" is the useful answer — and the number
+    needed to say it is already measured on every turn."""
+    from zensuvidha.orchestrator import Session
+    from zensuvidha.packs import load_pack
+    s = Session(load_pack("clinic"), None)
+
+    s.last_snr_db = 18.0
+    assert s.repair_kind() == "repeat"        # clean room — nothing to diagnose
+    s.last_snr_db = 8.0
+    assert s.repair_kind() == "faint"         # poor line, a repeat may work
+    s.last_snr_db = 2.0
+    assert s.repair_kind() == "noisy"         # repeating will not help; move
+
+
+def test_an_unmeasured_room_does_not_invent_a_diagnosis():
+    """`snr_db` is None when the audio could not be decoded. Telling a caller in a
+    quiet office that they are in a noisy one is worse than the generic line."""
+    from zensuvidha.orchestrator import Session
+    from zensuvidha.packs import load_pack
+    s = Session(load_pack("clinic"), None)
+    s.last_snr_db = None
+    assert s.repair_kind() == "repeat"
+
+
+def test_every_language_has_the_new_repair_lines():
+    """A missing key silently becomes "I don't have that detail" — which is how
+    "are you still there?" once went out as a refusal."""
+    from zensuvidha.guard import SAFE_LINES, SAFE_LINES_ROMAN, safe_line
+    from zensuvidha.packs import load_pack
+    pack = load_pack("clinic")
+    for lang, table in SAFE_LINES.items():
+        for key in ("noisy", "faint"):
+            assert key in table, f"{lang} has no {key} line"
+            line = safe_line(key, lang, pack)
+            assert line and "don't have that detail" not in line
+    for key in ("noisy", "faint"):
+        assert key in SAFE_LINES_ROMAN["Hindi"]
+
+
+def test_the_room_is_measured_even_with_no_denoiser_installed():
+    """It used to be computed inside the denoise branch, so with the toggle off — the
+    default — nothing measured at all and the inspector showed no room reading."""
+    import io
+    import numpy as np
+    import soundfile as sf
+    from zensuvidha import pipeline
+
+    sr = 16000
+    t = np.linspace(0, 2, 2 * sr, endpoint=False)
+    voice = (0.3 * np.sign(np.sin(2 * np.pi * 130 * t))
+             * np.abs(np.sin(2 * np.pi * 3 * t))).astype("float32")
+    noisy = voice + 0.25 * np.random.default_rng(0).normal(size=voice.size).astype("float32")
+
+    def wav(x):
+        b = io.BytesIO()
+        sf.write(b, x, sr, format="WAV", subtype="PCM_16")
+        return b.getvalue()
+
+    def dec(raw):
+        d, _ = sf.read(io.BytesIO(raw), dtype="float32")
+        return d
+
+    _, clean_info = pipeline.prepare(wav(voice), gate=None, voiceprint=None, decode=dec)
+    _, noisy_info = pipeline.prepare(wav(noisy), gate=None, voiceprint=None, decode=dec)
+    assert clean_info["snr_db"] is not None, "the room was not measured at all"
+    assert noisy_info["snr_db"] is not None
+    assert noisy_info["snr_db"] < clean_info["snr_db"], "the reading is not responsive"
+    assert not clean_info["denoised"] and not noisy_info["denoised"]

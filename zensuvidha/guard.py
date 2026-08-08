@@ -184,6 +184,8 @@ SAFE_LINES = {
         "scope": "I'm the receptionist at {biz} — I can help with appointments, timings, fees "
                  "and our services. Please ask me about that.",
         "repeat": "Sorry, I didn't quite catch that — could you say it once more?",
+        "noisy": "There's a lot of background noise coming through — could you move somewhere quieter and say that again?",
+        "faint": "The line isn't very clear — could you say that once more?",
         "ref": "Your booking reference is #{ref}.",
         "go_on": "Go on, I'm listening.",
     },
@@ -195,6 +197,8 @@ SAFE_LINES = {
         "scope": "मैं {biz} की रिसेप्शनिस्ट हूँ। मैं अपॉइंटमेंट, समय, फ़ीस और हमारी सेवाओं के बारे में "
                  "मदद कर सकती हूँ। कृपया इसी बारे में पूछिए।",
         "repeat": "माफ़ कीजिए, मैं ठीक से सुन नहीं पाई। कृपया एक बार फिर कहिए।",
+        "noisy": "पीछे काफ़ी शोर आ रहा है — क्या आप किसी शांत जगह से दोबारा कहेंगे?",
+        "faint": "लाइन साफ़ नहीं आ रही — कृपया एक बार फिर कहिए।",
         "ref": "आपका बुकिंग रेफरेंस #{ref} है।",
         "go_on": "जी कहिए, मैं सुन रही हूँ।",
     },
@@ -206,6 +210,8 @@ SAFE_LINES = {
         "scope": "నేను {biz} రిసెప్షనిస్ట్‌ని. అపాయింట్‌మెంట్లు, సమయాలు, ఫీజులు మరియు మా సేవల గురించి "
                  "మాత్రమే సహాయం చేయగలను. దయచేసి వాటి గురించి అడగండి.",
         "repeat": "క్షమించండి, సరిగ్గా వినిపించలేదు. దయచేసి మరోసారి చెప్పండి.",
+        "noisy": "వెనుక చాలా శబ్దం వస్తోంది — కొంచెం నిశ్శబ్దమైన చోటి నుంచి మళ్ళీ చెప్పగలరా?",
+        "faint": "లైన్ స్పష్టంగా లేదు — దయచేసి మరోసారి చెప్పండి.",
         "ref": "మీ బుకింగ్ రిఫరెన్స్ #{ref}.",
         "go_on": "చెప్పండి, నేను వింటున్నాను.",
     },
@@ -217,6 +223,8 @@ SAFE_LINES = {
         "scope": "நான் {biz} வரவேற்பாளர். சந்திப்பு, நேரம், கட்டணம் மற்றும் எங்கள் சேவைகள் பற்றி மட்டுமே "
                  "உதவ முடியும். தயவுசெய்து அதைப் பற்றி கேளுங்கள்.",
         "repeat": "மன்னிக்கவும், சரியாகக் கேட்கவில்லை. தயவுசெய்து மீண்டும் ஒருமுறை சொல்லுங்கள்.",
+        "noisy": "பின்னணியில் அதிக சத்தம் கேட்கிறது — அமைதியான இடத்திலிருந்து மீண்டும் சொல்ல முடியுமா?",
+        "faint": "இணைப்பு தெளிவாக இல்லை — தயவுசெய்து மீண்டும் ஒருமுறை சொல்லுங்கள்.",
         "ref": "உங்கள் முன்பதிவு குறிப்பு எண் #{ref}.",
         "go_on": "சொல்லுங்கள், நான் கேட்கிறேன்.",
     },
@@ -228,6 +236,8 @@ SAFE_LINES = {
         "scope": "ನಾನು {biz} ಸ್ವಾಗತಕಾರಿ. ಅಪಾಯಿಂಟ್‌ಮೆಂಟ್, ಸಮಯ, ಶುಲ್ಕ ಮತ್ತು ನಮ್ಮ ಸೇವೆಗಳ ಬಗ್ಗೆ ಮಾತ್ರ "
                  "ಸಹಾಯ ಮಾಡಬಲ್ಲೆ. ದಯವಿಟ್ಟು ಅದರ ಬಗ್ಗೆ ಕೇಳಿ.",
         "repeat": "ಕ್ಷಮಿಸಿ, ಸರಿಯಾಗಿ ಕೇಳಿಸಲಿಲ್ಲ. ದಯವಿಟ್ಟು ಇನ್ನೊಮ್ಮೆ ಹೇಳಿ.",
+        "noisy": "ಹಿನ್ನೆಲೆಯಲ್ಲಿ ತುಂಬಾ ಶಬ್ದವಿದೆ — ಸ್ವಲ್ಪ ಶಾಂತವಾದ ಸ್ಥಳದಿಂದ ಮತ್ತೊಮ್ಮೆ ಹೇಳಬಹುದೇ?",
+        "faint": "ಲೈನ್ ಸ್ಪಷ್ಟವಾಗಿಲ್ಲ — ದಯವಿಟ್ಟು ಇನ್ನೊಮ್ಮೆ ಹೇಳಿ.",
         "ref": "ನಿಮ್ಮ ಬುಕಿಂಗ್ ಉಲ್ಲೇಖ ಸಂಖ್ಯೆ #{ref}.",
         "go_on": "ಹೇಳಿ, ನಾನು ಕೇಳುತ್ತಿದ್ದೇನೆ.",
     },
@@ -239,6 +249,8 @@ SAFE_LINES = {
         "scope": "ഞാൻ {biz} ലെ റിസപ്ഷനിസ്റ്റാണ്. അപ്പോയിന്റ്മെന്റ്, സമയം, ഫീസ്, ഞങ്ങളുടെ സേവനങ്ങൾ "
                  "എന്നിവയിൽ മാത്രമേ സഹായിക്കാൻ കഴിയൂ. ദയവായി അതിനെക്കുറിച്ച് ചോദിക്കൂ.",
         "repeat": "ക്ഷമിക്കണം, ശരിക്ക് കേട്ടില്ല. ദയവായി ഒന്നുകൂടി പറയാമോ?",
+        "noisy": "പിന്നിൽ വളരെയധികം ശബ്ദമുണ്ട് — ശാന്തമായ ഒരിടത്തുനിന്ന് ഒന്നുകൂടി പറയാമോ?",
+        "faint": "ലൈൻ വ്യക്തമല്ല — ദയവായി ഒന്നുകൂടി പറയൂ.",
         "ref": "നിങ്ങളുടെ ബുക്കിംഗ് റഫറൻസ് #{ref}.",
         "go_on": "പറയൂ, ഞാൻ കേൾക്കുന്നു.",
     },
@@ -250,6 +262,8 @@ SAFE_LINES = {
         "scope": "আমি {biz}-এর রিসেপশনিস্ট। আমি অ্যাপয়েন্টমেন্ট, সময়, ফি এবং আমাদের পরিষেবা নিয়ে "
                  "সাহায্য করতে পারি। অনুগ্রহ করে সেই বিষয়েই জিজ্ঞাসা করুন।",
         "repeat": "দুঃখিত, ঠিকমতো শুনতে পাইনি। অনুগ্রহ করে আরেকবার বলুন।",
+        "noisy": "পিছনে অনেক আওয়াজ হচ্ছে — একটু শান্ত জায়গা থেকে আবার বলবেন?",
+        "faint": "লাইন পরিষ্কার আসছে না — অনুগ্রহ করে আরেকবার বলুন।",
         "ref": "আপনার বুকিং রেফারেন্স #{ref}।",
         "go_on": "বলুন, আমি শুনছি।",
     },
@@ -261,6 +275,8 @@ SAFE_LINES = {
         "scope": "मी {biz} ची रिसेप्शनिस्ट आहे. मी अपॉइंटमेंट, वेळ, फी आणि आमच्या सेवांबद्दल मदत करू शकते. "
                  "कृपया त्याबद्दलच विचारा.",
         "repeat": "माफ करा, नीट ऐकू आलं नाही. कृपया पुन्हा एकदा सांगा.",
+        "noisy": "मागे खूप आवाज येतोय — जरा शांत ठिकाणाहून पुन्हा सांगाल का?",
+        "faint": "लाइन स्पष्ट येत नाही — कृपया पुन्हा एकदा सांगा.",
         "ref": "तुमचा बुकिंग संदर्भ क्रमांक #{ref} आहे.",
         "go_on": "सांगा, मी ऐकते आहे.",
     },
@@ -272,6 +288,8 @@ SAFE_LINES = {
         "scope": "હું {biz} ની રિસેપ્શનિસ્ટ છું. હું એપોઇન્ટમેન્ટ, સમય, ફી અને અમારી સેવાઓ વિશે મદદ કરી શકું છું. "
                  "કૃપા કરીને એ વિશે પૂછો.",
         "repeat": "માફ કરશો, બરાબર સંભળાયું નહીં. કૃપા કરીને ફરી એકવાર કહો.",
+        "noisy": "પાછળ ઘણો અવાજ આવે છે — થોડી શાંત જગ્યાએથી ફરી કહેશો?",
+        "faint": "લાઇન સ્પષ્ટ નથી — કૃપા કરીને ફરી એકવાર કહો.",
         "ref": "તમારો બુકિંગ સંદર્ભ #{ref} છે.",
         "go_on": "કહો, હું સાંભળું છું.",
     },
@@ -283,6 +301,8 @@ SAFE_LINES = {
         "scope": "ਮੈਂ {biz} ਦੀ ਰਿਸੈਪਸ਼ਨਿਸਟ ਹਾਂ। ਮੈਂ ਅਪਾਇੰਟਮੈਂਟ, ਸਮਾਂ, ਫ਼ੀਸ ਅਤੇ ਸਾਡੀਆਂ ਸੇਵਾਵਾਂ ਬਾਰੇ ਮਦਦ ਕਰ ਸਕਦੀ ਹਾਂ। "
                  "ਕਿਰਪਾ ਕਰਕੇ ਉਸੇ ਬਾਰੇ ਪੁੱਛੋ।",
         "repeat": "ਮਾਫ਼ ਕਰਨਾ, ਠੀਕ ਤਰ੍ਹਾਂ ਸੁਣਾਈ ਨਹੀਂ ਦਿੱਤਾ। ਕਿਰਪਾ ਕਰਕੇ ਇੱਕ ਵਾਰ ਫਿਰ ਕਹੋ।",
+        "noisy": "ਪਿੱਛੇ ਬਹੁਤ ਰੌਲਾ ਆ ਰਿਹਾ ਹੈ — ਕੀ ਤੁਸੀਂ ਕਿਸੇ ਸ਼ਾਂਤ ਥਾਂ ਤੋਂ ਦੁਬਾਰਾ ਕਹੋਗੇ?",
+        "faint": "ਲਾਈਨ ਸਾਫ਼ ਨਹੀਂ ਆ ਰਹੀ — ਕਿਰਪਾ ਕਰਕੇ ਇੱਕ ਵਾਰ ਫਿਰ ਕਹੋ।",
         "ref": "ਤੁਹਾਡਾ ਬੁਕਿੰਗ ਰੈਫਰੈਂਸ #{ref} ਹੈ।",
         "go_on": "ਦੱਸੋ, ਮੈਂ ਸੁਣ ਰਹੀ ਹਾਂ।",
     },
@@ -294,6 +314,8 @@ SAFE_LINES = {
         "scope": "میں {biz} کی ریسپشنسٹ ہوں۔ میں اپائنٹمنٹ، اوقات، فیس اور ہماری خدمات کے بارے میں "
                  "مدد کر سکتی ہوں۔ براہ کرم اسی بارے میں پوچھیے۔",
         "repeat": "معاف کیجیے، ٹھیک سے سنائی نہیں دیا۔ براہ کرم ایک بار پھر کہیے۔",
+        "noisy": "پیچھے کافی شور آ رہا ہے — کیا آپ کسی پرسکون جگہ سے دوبارہ کہیں گے؟",
+        "faint": "لائن صاف نہیں آ رہی — براہِ کرم ایک بار پھر کہیے۔",
         "ref": "آپ کا بکنگ ریفرنس #{ref} ہے۔",
         "go_on": "جی کہیے، میں سن رہی ہوں۔",
     },
@@ -305,6 +327,8 @@ SAFE_LINES = {
         "scope": "ମୁଁ {biz} ର ରିସେପ୍ସନିଷ୍ଟ। ମୁଁ ଆପଏଣ୍ଟମେଣ୍ଟ, ସମୟ, ଫି ଏବଂ ଆମର ସେବା ବିଷୟରେ ସାହାଯ୍ୟ କରିପାରିବି। "
                  "ଦୟାକରି ସେ ବିଷୟରେ ପଚାରନ୍ତୁ।",
         "repeat": "କ୍ଷମା କରନ୍ତୁ, ଠିକ୍ ଭାବରେ ଶୁଣିପାରିଲି ନାହିଁ। ଦୟାକରି ଆଉ ଥରେ କୁହନ୍ତୁ।",
+        "noisy": "ପଛରେ ବହୁତ ଶବ୍ଦ ଆସୁଛି — ଟିକେ ଶାନ୍ତ ଜାଗାରୁ ପୁଣି କହିପାରିବେ କି?",
+        "faint": "ଲାଇନ ସ୍ପଷ୍ଟ ଆସୁନାହିଁ — ଦୟାକରି ଆଉ ଥରେ କୁହନ୍ତୁ।",
         "ref": "ଆପଣଙ୍କ ବୁକିଂ ରେଫରେନ୍ସ #{ref}।",
         "go_on": "କୁହନ୍ତୁ, ମୁଁ ଶୁଣୁଛି।",
     },
@@ -319,6 +343,8 @@ SAFE_LINES_ROMAN = {
         "scope": "Main {biz} ki receptionist hoon. Main appointment, timing, fees aur hamari services "
                  "ke baare mein help kar sakti hoon. Please usi baare mein poochiye.",
         "repeat": "Sorry, main theek se sun nahi payi. Please ek baar phir kahiye.",
+        "noisy": "Peechhe kaafi shor aa raha hai — kya aap kisi shaant jagah se dobara kahenge?",
+        "faint": "Line saaf nahi aa rahi — kripya ek baar phir kahiye.",
         "ref": "Aapka booking reference #{ref} hai.",
         "ask_name": "Aapka pura naam bata dijiye.",
         "ask_phone": "Aapka mobile number kya hai?",
@@ -587,6 +613,69 @@ number name mobile phone naam
 """.split())
 
 
+# Words that ARE the whole answer. A caller who says one of these has finished — there
+# is no continuation that changes the meaning, which is what makes them safe to close on.
+_TERMINAL_WORDS = frozenset("""
+yes yeah yep no nope ok okay sure right correct done
+haan han haa haan-ji ji jee nahi nahin theek thik acha achha bilkul
+हाँ हां जी नहीं ना ठीक अच्छा बिल्कुल सही
+అవును కాదు సరే ఒప్పుకుంటాను
+ஆம் இல்லை சரி
+ಹೌದು ಇಲ್ಲ ಸರಿ
+അതെ ഇല്ല ശരി
+হ্যাঁ না ঠিক
+होय नाही ठीक
+હા ના બરાબર
+ਹਾਂ ਨਹੀਂ ਠੀਕ
+ہاں نہیں ٹھیک
+ହଁ ନା ଠିକ
+""".split())
+
+
+def looks_complete(text: str, expect_phone: bool = False) -> bool:
+    """True only when nothing plausibly follows — so the turn can be closed EARLY.
+
+    The mirror of `looks_incomplete`, and deliberately much stricter, because the two
+    mistakes are not symmetrical. A false "incomplete" costs the caller a pause. A false
+    "complete" CHOPS THEIR SENTENCE IN HALF, which is the failure the endpointer has
+    already been tuned twice to avoid ("it breaks my long sentences").
+
+    So this fires on exactly two shapes, both of which admit no continuation:
+
+      1. a phone number that has reached full length, when a phone is what we asked for
+         — the digits are done and nothing after them changes the number;
+      2. a bare yes/no/ok, alone — "haan" is the entire answer, and waiting 1200ms for
+         a word that is already finished is most of what makes a call feel slow.
+
+    Everything else returns False and keeps the normal window. A name is NOT here
+    ("Manu" then "Mishra"), nor is a time ("tomorrow" then "morning"), nor a sentence
+    that merely ends in punctuation — Whisper punctuates mid-utterance constantly.
+    """
+    if not text:
+        return False
+    if looks_incomplete(text, expect_phone=expect_phone):
+        return False                      # the two must never both be true
+
+    words = _norm_words(text)
+    if not words:
+        return False
+
+    # 1. a complete phone number, when a phone is what was asked for
+    if expect_phone:
+        digits = [n for n in numbers_in(text) if n.isdigit()]
+        if digits and 10 <= len(max(digits, key=len)) <= 13:
+            return True
+
+    # 2. a bare affirmative or negative, and nothing else. Length is the guard: "yes"
+    #    is finished, "yes I would like to book" is a sentence that may continue.
+    if len(words) == 1 and words[0] in _TERMINAL_WORDS:
+        return True
+    if len(words) == 2 and all(w in _TERMINAL_WORDS for w in words):
+        return True                       # "haan ji", "yes ok", "ठीक है" style pairs
+
+    return False
+
+
 def looks_incomplete(text: str, expect_phone: bool = False) -> bool:
     """True when the caller almost certainly has not finished the sentence.
 
@@ -658,7 +747,7 @@ def safe_line(kind: str, lang_name: str | None, pack: dict, romanized: bool = Fa
     # key that is not was silently answered with "I don't have that detail", which is
     # how "are you still there?" first went out as a refusal.
     kind = kind if kind in ("unknown", "scope", "repeat", "ref", "go_on",
-                            "still_there", "goodbye") else "unknown"
+                            "still_there", "goodbye", "noisy", "faint") else "unknown"
     # (booking questions live in ASK_LINES / ask_line — they are per-slot, not per-kind)
     table = None
     if lang_name:

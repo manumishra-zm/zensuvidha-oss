@@ -629,7 +629,16 @@ let specWords=false, specUttMs=0, pendingPCM=null, commitTimer=null;
 // Set when the server has looked at the words so far and judged the sentence unfinished
 // ("मेरा मोबाइल नंबर" — the number is still coming). Silence alone cannot know that.
 let holdForMore=false;
+let settled = false;         // server says the words admit no continuation
+let bcBuffer = null, bcUsedThisTurn = false;   // the preloaded listening noise
 const HOLD_EXTRA_MS = 900;
+const SETTLED_MS = 400;      // the transcript is unambiguously finished — close now
+// A listening noise while the CALLER is still talking. Not a filler — a filler covers
+// our silence while we think; this is the "mm-hm" that says we are still here. Held
+// client-side and played locally, because it has to land in the pause itself.
+const BACKCHANNEL_AFTER_MS = 2600;   // only on a turn long enough to feel unattended
+const BACKCHANNEL_PAUSE_MS = 180;    // …and only into a real gap, never over a word
+const BACKCHANNEL_GAIN     = 0.32;   // ducked: a listener murmurs, they do not announce
 function endpointMs(){
   // A one-word answer is finished the moment it stops — "हाँ" needs no thinking time, and
   // making it wait would slow every turn. Only a sentence long enough to have a MIDDLE
@@ -639,6 +648,12 @@ function endpointMs(){
     : Math.max(ENDPOINT_LONG_MS, speakerPauseMs*1.25);
   // A sentence the server can SEE is unfinished earns extra time regardless of length —
   // "मेरा नाम" is short and obviously not done.
+  // The server can also see that the words are FINISHED — a completed phone number, or
+  // a bare "haan". Nothing follows either, so close early instead of sitting out a
+  // window sized for someone still searching for a word. This is the single biggest
+  // contributor to the call feeling slow, and it costs nothing when the signal is off.
+  // `holdForMore` always wins: "unfinished" is the conservative answer of the two.
+  if(settled && !holdForMore) return SETTLED_MS;
   return Math.min(ENDPOINT_MAX_MS + (holdForMore ? HOLD_EXTRA_MS : 0),
                   base + (holdForMore ? HOLD_EXTRA_MS : 0));
 }
@@ -912,7 +927,7 @@ async function handleFrame(f, backlogged){
     // accumulated on top of seconds-old audio, and it was committed as if the caller
     // had just said it — answering a question two turns behind the conversation.
     // Discard it. If they really are still talking, BARGE_MS below opens a fresh turn.
-    if(vad==='speech'){ vad='silence'; uttPCM=[]; uttMs=0; silenceMs=0; speechMs=0;
+    if(vad==='speech'){ vad='silence'; uttPCM=[]; uttMs=0; silenceMs=0; speechMs=0; bcUsedThisTurn=false;
                         dropSpeculation(); specTries=0; specAt=0; specUttMs=0;
                         holdForMore=false; }
     // SELF-ECHO GUARD. Today the browser's AEC removes the agent's own voice before we
@@ -992,6 +1007,7 @@ async function handleFrame(f, backlogged){
     speechMs=0;
     if(vad==='speech'){
       uttPCM.push(f.pcm); uttMs+=ms; silenceMs+=ms;
+      maybeBackchannel();
       if(silenceMs>=SPEC_MS && !specSent && uttMs>=SPEC_MIN_MS) sendSpeculative();
       const limit=endpointMs();          // read BEFORE endUtterance resets uttMs
       if(silenceMs>=limit){
@@ -1000,6 +1016,25 @@ async function handleFrame(f, backlogged){
       }
     }
   }
+}
+function maybeBackchannel(){
+  // ONCE per turn, on a long turn, into a real pause, and never while we are already
+  // speaking. Each condition removes a way this becomes an interruption rather than a
+  // listening noise — and an interruption is far worse than staying silent, because the
+  // caller stops to let us finish and then has to start their sentence again.
+  if(!bcBuffer || bcUsedThisTurn || !audioCtx) return;
+  if(uttMs < BACKCHANNEL_AFTER_MS) return;
+  if(silenceMs < BACKCHANNEL_PAUSE_MS) return;   // mid-word: say nothing
+  if(agentLevel() > 0.001) return;               // we are already talking
+  bcUsedThisTurn = true;
+  try{
+    const src = audioCtx.createBufferSource();
+    const g   = audioCtx.createGain();
+    g.gain.value = BACKCHANNEL_GAIN;
+    src.buffer = bcBuffer; src.connect(g); g.connect(audioCtx.destination);
+    src.start();
+    console.log('[bc] listening noise at '+(uttMs|0)+'ms into the turn');
+  }catch(_){}
 }
 function wavOf(chunks){ return floatTo16kWav(chunks, audioCtx.sampleRate); }
 function sendSpeculative(){
@@ -1691,8 +1726,22 @@ function connect(pack, isReconnect){
         if(vad==='speech'){
           const wasHeld=holdForMore;
           holdForMore = (m.complete===false);
+          // Set AND clear, for the same reason holdForMore does: a latched hint would
+          // apply one turn's shape to every turn after it.
+          settled = (m.settled===true);
+          if(settled && !wasHeld) console.log('[vad] transcript is finished → closing in '+SETTLED_MS+'ms');
           if(holdForMore && !wasHeld)
             console.log('[vad] transcript sounds unfinished → waiting '+(endpointMs()|0)+'ms');
+        }
+        break;
+      case 'backchannel':
+        // Decoded once and held for the whole call — never played on arrival. Promise
+        // form rather than await: ws.onmessage is not async, and making it so would
+        // change the ordering of every other message it handles.
+        if(audioCtx && audioBuf){
+          audioCtx.decodeAudioData(audioBuf)
+            .then(b => { bcBuffer = b; })
+            .catch(() => { bcBuffer = null; });
         }
         break;
       case 'pcm':

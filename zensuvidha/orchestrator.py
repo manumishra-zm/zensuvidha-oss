@@ -217,6 +217,10 @@ def _strip_name_frame(value: str) -> str:
     return out or value
 
 
+# Off in the browser is defensible — getUserMedia already cancels — but it costs ~12ms
+# on a 1070ms path and is the only defence a phone line has, so it ships on.
+ECHO_SUPPRESSION = True
+
 _HESITATIONS = frozenset("""
 hmm hm hmmm uh uhh um umm er err ah aah oh ok okay yeah yep yes no nope sure right
 haan han haa ji jee acha accha achha theek thik matlab
@@ -497,6 +501,13 @@ class Session:
         self._last_atype = None                # action type of the previous turn
         self.slots: dict = {}                 # booking fields accumulated ACROSS turns (small
                                               #   models forget them, so the server remembers)
+        from .echo import EchoSuppressor
+        # All echo handling today comes from the browser. A telephony transport has
+        # none, so without this the agent hears itself, treats it as barge-in, and
+        # interrupts itself in a loop. Fails open in every uncertain case.
+        self.echo = EchoSuppressor(enabled=ECHO_SUPPRESSION)
+        self.last_snr_db = None               # floor-to-voice gap on the last turn,
+                                              #   so a repair can say WHY it failed
         self.last_asked_slot = None           # what the caller was last ASKED — looser
                                               #   than pending_slot, rescue-only
         self.pending_slot = None              # the field we last asked for out loud, so the
@@ -968,6 +979,29 @@ class Session:
         k = (kind or "").strip().lower()
         return safe_line(_KIND_TO_SAFE.get(k, k), lang, self.pack, roman)
 
+    # Floor-to-voice gap, in dB. Measured on this codebase: a clean room reads 13-18,
+    # music at equal loudness 4.7, heavy hiss 0.7. The denoise router already cuts at
+    # 10, so these sit either side of a number that has been calibrated once.
+    NOISY_BELOW_DB = 6.0        # loud enough that repeating will not help
+    FAINT_BELOW_DB = 11.0       # poor line, but a repeat is worth asking for
+
+    def repair_kind(self) -> str:
+        """Which "I didn't catch that" to use, given how the room actually sounded.
+
+        The generic line is the one thing every caller hears when something goes wrong,
+        and saying it three times in a row without ever mentioning the noise is the most
+        machine-like thing this system does. The number needed to do better is already
+        measured on every turn — it was simply never used for anything the caller hears.
+        """
+        snr = self.last_snr_db
+        if snr is None:
+            return "repeat"                 # nobody measured — do not invent a diagnosis
+        if snr < self.NOISY_BELOW_DB:
+            return "noisy"
+        if snr < self.FAINT_BELOW_DB:
+            return "faint"
+        return "repeat"
+
     def booking_ref(self, bid) -> str:
         """"Your booking reference is #12." — in the caller's own language."""
         lang, roman = self.reply_style(self.last_user_text())
@@ -1314,7 +1348,7 @@ class Session:
                           truncated=(meta or {}).get("finish_reason") == "length")
         if not say and not booked:
             lang, roman = self.reply_style(self.last_user_text())
-            say = safe_line("repeat", lang, self.pack, roman)
+            say = safe_line(self.repair_kind(), lang, self.pack, roman)
         if booked and f"#{action['booking_id']}" not in say:
             say = (say.rstrip(". ") + ". " if say else "") + self.booking_ref(action["booking_id"])
 
@@ -1483,7 +1517,7 @@ class Session:
         heard = self.transcribe(audio_path)
         if not heard:
             lang, roman = self.reply_style(self.last_user_text())
-            return {"say": safe_line("repeat", lang, self.pack, roman),
+            return {"say": safe_line(self.repair_kind(), lang, self.pack, roman),
                     "action": {"type": "none"}, "heard": ""}
         res = self.handle_text(heard)
         res["heard"] = heard
@@ -1653,6 +1687,10 @@ class Session:
             isolate_mode=self.isolate_on,
             was_denoised=self._was_denoised)
         self._was_denoised = info["denoised"]
+        # What the room sounded like on THIS turn. Used to choose the repair line:
+        # a person tells you WHY they could not hear you, and repeating into a fan
+        # does not help, so "could you move somewhere quieter" is the useful answer.
+        self.last_snr_db = info["snr_db"]
         if info["isolated"] or info["denoised"]:
             log.info("audio: %s%s%s(%.0fms)",
                      f"{info['speakers']} voices, kept {info['kept_s']:.1f}s of "
@@ -1668,6 +1706,28 @@ class Session:
     # module is now the single place that decides what happens to a turn's audio.
     def isolate_caller(self, audio):
         return self.clean_audio(audio)
+
+    def note_played(self, raw: bytes) -> None:
+        """Remember audio we are sending, so it can be recognised coming back."""
+        if self.echo.enabled and raw and self.stt is not None:
+            self.echo.note_output_wav(raw, self.stt._decode)
+
+    def is_own_echo(self, raw: bytes) -> tuple[bool, float]:
+        """Is this microphone frame mostly our own voice returning?
+
+        Judged on RAW audio, before isolation or denoising touch it — a denoiser that
+        reshapes the echo would break the correlation this depends on, and isolation
+        would happily trim our own voice into something unrecognisable.
+        """
+        if not self.echo.enabled or self.stt is None:
+            return False, 0.0
+        try:
+            data = self.stt._decode(raw)
+        except Exception:  # noqa: BLE001
+            return False, 0.0
+        if data is None:
+            return False, 0.0
+        return self.echo.is_echo(data)
 
     def check_speaker(self, audio, speakers=None, heard=None):
         """Is this the person whose call this is?

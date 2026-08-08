@@ -167,6 +167,14 @@ def prepare(raw, *, decode, denoiser=None, diarizer=None, gate=None, voiceprint=
         info["total_s"] = round(data.size / SR, 2)
         work, changed = data, False
 
+        # Measure the room on EVERY turn, before anything else touches the signal.
+        # It used to be computed inside the denoise branch, so a machine without the
+        # DeepFilter binary — or with the toggle off, which is the default — never
+        # measured at all: the inspector showed no room reading, and the caller got the
+        # same flat "could you say that again?" whether they were in a quiet office or
+        # standing next to a fan. Free either way: two numpy percentiles.
+        info["snr_db"] = None if (snr0 := room_snr_db(data)) is None else round(snr0, 1)
+
         # ---- 1. isolate, on RAW ------------------------------------------
         # Identity is measurably better on unprocessed audio (0.675 vs 0.596), and
         # this is the ONLY step that can remove another human voice. It therefore
@@ -192,9 +200,10 @@ def prepare(raw, *, decode, denoiser=None, diarizer=None, gate=None, voiceprint=
         # decisions above are made from. Skipped entirely on a clean recording:
         # it costs ~500ms and raised WER from 0.00 to 0.10 there.
         if denoiser is not None and denoise_mode is not False:
-            want, snr = (True, room_snr_db(work)) if denoise_mode is True \
+            want, snr = (True, info["snr_db"]) if denoise_mode is True \
                 else should_denoise(work, was_denoised)
-            info["snr_db"] = None if snr is None else round(snr, 1)
+            if snr is not None:
+                info["snr_db"] = round(snr, 1)
             if want:
                 t0 = time.time()
                 try:

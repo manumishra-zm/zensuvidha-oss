@@ -33,7 +33,8 @@ from starlette.concurrency import run_in_threadpool
 
 from .booking import list_bookings, log_turn, list_turns
 from .config import load_config
-from .guard import (GuardConfig, is_degenerate, looks_incomplete, looks_like_echo,
+from .guard import (GuardConfig, is_degenerate, looks_complete, looks_incomplete,
+                    looks_like_echo,
                     ungrounded_numbers)
 from .llm import get_llm, OllamaError
 from .logs import setup_logging, set_call_id, call_id_var
@@ -242,6 +243,41 @@ _FILLERS = {
 }
 
 
+# A BACKCHANNEL is not a filler. A filler covers OUR silence while we think; a
+# backchannel is what a listener says while the OTHER person is still talking — the
+# "mm-hm" that tells them you are still there. Its absence is the most machine-like
+# thing about a long turn: the agent is completely silent, then abruptly speaks.
+#
+# Deliberately one short word. Anything longer stops being a listening noise and starts
+# being an interruption, and a caller mid-sentence will stop to let you finish.
+_BACKCHANNELS = {
+    "English":  "Mm-hm.",
+    "Hindi":    "जी…",
+    "Telugu":   "అలాగే…",
+    "Kannada":  "ಹೌದು…",
+    "Tamil":    "ஆமாம்…",
+    "Bengali":  "হ্যাঁ…",
+    "Marathi":  "हो…",
+    "Gujarati": "હા…",
+    "Malayalam": "ശരി…",
+    "Punjabi":  "ਹਾਂ ਜੀ…",
+    "Urdu":     "جی…",
+    "Odia":     "ହଁ…",
+}
+BACKCHANNEL_ON = bool(cfg.get("server", {}).get("backchannel", True))
+
+
+def _backchannel_for(lang_name):
+    """The listening noise for this call's language, or None to stay silent.
+
+    Never falls back to English: dropping an English "mm-hm" into a Telugu call is
+    exactly the single-language rule the fillers already observe.
+    """
+    if not BACKCHANNEL_ON:
+        return None
+    return _BACKCHANNELS.get(lang_name or "English")
+
+
 _filler_used: set = set()
 
 
@@ -340,7 +376,60 @@ async def _dropped(sock, why: str):
         pass
 
 
-async def _send_audio(sock, meta: dict, audio: bytes | None):
+SPECULATIVE_REPLY = bool(cfg.get("server", {}).get("speculative_reply", True))
+
+
+def _void_speculation(spec: dict) -> None:
+    """Throw away a speculative reply and the work still producing it.
+
+    Called from every path that invalidates the guess — the caller resumed, they barged
+    in, a newer guess arrived. Missing one of them is how a reply to a half-finished
+    sentence reaches the caller, so this is one function rather than three copies.
+    """
+    t = spec.get("gen")
+    if t is not None and not t.done():
+        t.cancel()
+    spec["gen"] = None
+    spec["gen_for"] = None
+
+
+async def _speculate_reply(session, guess: str) -> str:
+    """Generate the reply to a transcript the caller has not yet confirmed.
+
+    The saving is the gap between speculating (450ms of silence) and the endpoint
+    (800-1200ms) — 350-750ms off time-to-first-audio on a long turn, which is the
+    dominant remaining wait now that STT is already off the critical path.
+
+    Strictly READ-ONLY on the session. `begin_user` appends history and folds the
+    caller's numbers into the grounding set, and this system has already been broken
+    once by letting a guess mutate state — a voiceprint enrolled from a speculative
+    fragment locked the caller out for a whole call. So this builds the message list by
+    hand, streams into a buffer, and touches nothing. If the guess is wrong the buffer
+    is dropped and the only cost is compute nobody was using.
+    """
+    msgs = session.call_messages() + [{"role": "user", "content": guess}]
+    buf = []
+    async for delta in session.llm.astream(
+            msgs, force_json=True, model=session.model,
+            num_predict=session.reply_budget(guess), meta={},
+            num_ctx=session.context_budget(guess)):
+        buf.append(delta)
+    return "".join(buf)
+
+
+async def _send_audio(sock, meta: dict, audio: bytes | None, session=None):
+    """Ship an audio frame, and remember it as echo reference on the way out.
+
+    Every byte we play leaves through here, which makes it the one place that cannot
+    miss a frame — and a reference with holes in it is worse than none, because the
+    frames it fails to explain are exactly the ones that get answered as if the caller
+    had said them.
+    """
+    if session is not None and audio:
+        try:
+            session.note_played(audio)
+        except Exception as e:  # noqa: BLE001
+            log.debug("echo: could not record our own output (%s)", e)
     await sock.send_bytes(_audio_frame(meta, audio))
 
 
@@ -591,18 +680,37 @@ def health():
 # --------------------------------------------------------------------------- #
 # WebSocket voice loop
 # --------------------------------------------------------------------------- #
+async def _preload_backchannel(sock, session):
+    """Ship the listening noise to the client once, at the start of the call.
+
+    It has to play the instant the caller pauses mid-sentence, so asking the server for
+    it at that moment would arrive after the gap it exists to fill. Best-effort: a call
+    with no backchannel is exactly today's behaviour, so any failure here is silent.
+    """
+    try:
+        phrase = _backchannel_for(session.reply_language(""))
+        if not phrase:
+            return
+        audio = await run_in_threadpool(session.tts_bytes, phrase)
+        if audio:
+            await _send_audio(sock, {"type": "backchannel", "text": phrase}, audio, session=session)
+    except Exception as e:  # noqa: BLE001
+        log.debug("backchannel preload skipped: %s", e)
+
+
 async def _send_greeting(sock, session, pack_name):
     greet = session.greeting()
     audio = await run_in_threadpool(session.tts_bytes, greet)
-    await _send_audio(sock, {"type": "greeting", "pack": pack_name, "text": greet}, audio)
+    await _send_audio(sock, {"type": "greeting", "pack": pack_name, "text": greet}, audio, session=session)
+    await _preload_backchannel(sock, session)
 
 
 async def _speak_chunk(sock, session, text, seq):
     audio = await run_in_threadpool(session.tts_bytes, text)
-    await _send_audio(sock, {"type": "chunk", "seq": seq, "text": text}, audio)
+    await _send_audio(sock, {"type": "chunk", "seq": seq, "text": text}, audio, session=session)
 
 
-async def _stream_turn(sock, session, user_text, heard):
+async def _stream_turn(sock, session, user_text, heard, precomputed=None):
     """Stream the LLM and speak each finished sentence, with THREE stages pipelined:
       * generate — consume the LLM token stream, cut it into sentences;
       * synthesise — each sentence is TTS'd in its own task (up to SYNTH_WORKERS at
@@ -629,7 +737,7 @@ async def _stream_turn(sock, session, user_text, heard):
     # optional speculative filler played IMMEDIATELY (opt-in; off by default)
     if FILLER and heard:
         fill = await run_in_threadpool(session.tts_bytes, FILLER)
-        await _send_audio(sock, {"type": "chunk", "seq": 0, "text": FILLER, "filler": True}, fill)
+        await _send_audio(sock, {"type": "chunk", "seq": 0, "text": FILLER, "filler": True}, fill, session=session)
 
     model = _route_model(session, user_text)
     task_q: asyncio.Queue = asyncio.Queue()
@@ -656,7 +764,7 @@ async def _stream_turn(sock, session, user_text, heard):
             audio = await run_in_threadpool(session.tts_bytes, phrase)
             if not spoke["yet"]:        # re-check: real audio may have raced in during synth
                 session.filled_this_turn = True
-                await _send_audio(sock, {"type": "chunk", "seq": 0, "text": phrase, "filler": True}, audio)
+                await _send_audio(sock, {"type": "chunk", "seq": 0, "text": phrase, "filler": True}, audio, session=session)
         except asyncio.CancelledError:
             pass
         except Exception as e:  # noqa: BLE001
@@ -760,11 +868,28 @@ async def _stream_turn(sock, session, user_text, heard):
             await task_q.put(launch_synth(seq, line))
 
         retry_after_stream = {"want": False}
-        async for delta in session.llm.astream(session.call_messages(), force_json=True,
-                                               model=model,
-                                               num_predict=session.reply_budget(user_text),
-                                               meta=llm_meta,
-                                               num_ctx=session.context_budget(user_text)):
+
+        async def _tokens():
+            """The reply, token by token — from the model, or from a guess we already
+            generated while the caller was still pausing.
+
+            Replayed through the SAME loop rather than short-circuiting it, so the guard,
+            the sentence splitter, the TTS pipeline and the history all behave
+            identically. A second code path for the fast case is how the fast case ends
+            up subtly different from the slow one.
+            """
+            if precomputed:
+                llm_meta.setdefault("done_reason", "stop")
+                llm_meta["speculative"] = True
+                yield precomputed
+                return
+            async for d in session.llm.astream(
+                    session.call_messages(), force_json=True, model=model,
+                    num_predict=session.reply_budget(user_text), meta=llm_meta,
+                    num_ctx=session.context_budget(user_text)):
+                yield d
+
+        async for delta in _tokens():
             if st["t_first"] is None:
                 st["t_first"] = time.perf_counter()
             if not gate["frozen"]:
@@ -879,7 +1004,7 @@ async def _stream_turn(sock, session, user_text, heard):
                 filler_task.cancel()
             if q is None:                                 # whole-clip provider
                 spoke["yet"] = True                       # real audio → filler not needed
-                await _send_audio(sock, {"type": "chunk", "seq": seq, "text": text}, audio)
+                await _send_audio(sock, {"type": "chunk", "seq": seq, "text": text}, audio, session=session)
                 continue
             # Progressive provider: ship frames as they render. Still strictly ordered —
             # this chunk is drained to completion before the next one is awaited.
@@ -892,12 +1017,12 @@ async def _stream_turn(sock, session, user_text, heard):
                 spoke["yet"] = True
                 await _send_audio(sock, {"type": "pcm", "seq": seq, "sr": sr,
                                          "text": text if first else None,
-                                         "start": first}, pcm)
+                                         "start": first}, pcm, session=session)
                 first = False
             if first:      # yielded nothing — synthesise normally so the turn isn't silent
                 audio = await run_in_threadpool(session.tts_bytes, text)
                 spoke["yet"] = True
-                await _send_audio(sock, {"type": "chunk", "seq": seq, "text": text}, audio)
+                await _send_audio(sock, {"type": "chunk", "seq": seq, "text": text}, audio, session=session)
         await gen
     except (asyncio.CancelledError, WebSocketDisconnect):
         gen.cancel()
@@ -976,16 +1101,17 @@ async def _fallback_turn(sock, session, text=None, heard=""):
     await _send_audio(sock, {"type": "reply", "heard": heard, "text": res["say"],
                              "action": res.get("action", {}),
                              "escalated": res.get("escalated", False),
-                             "timings": res["timings"]}, audio)
+                             "timings": res["timings"]}, audio, session=session)
     _record_turn(call_id_var.get(), session.pack.get("id"), text or heard, res["say"],
                  session.reply_language(text or heard or ""), res["timings"].get("total_ms"))
 
 
-async def _turn_guarded(sock, session, text, heard):
+async def _turn_guarded(sock, session, text, heard, precomputed=None):
     """Run a turn as a cancellable task. On barge-in the task is cancelled;
     we keep the conversation history paired so the next turn stays coherent."""
     try:
-        await _run_turn(sock, session, text=text, heard=heard)
+        await _run_turn(sock, session, text=text, heard=heard,
+                        precomputed=precomputed)
     except asyncio.CancelledError:
         session.note_interrupted()
         return
@@ -1032,7 +1158,12 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
     # Speculative transcription state (see the `stt_hint` / `commit` messages below).
     # `armed`: the NEXT binary frame is a guess, not a turn. `text`: its transcript,
     # held until the client confirms the caller really had finished.
-    spec = {"armed": False, "text": None, "incomplete": False, "prompted": False}
+    spec = {"armed": False, "text": None, "incomplete": False,
+        "settled": False, "prompted": False,
+        # a reply generated against a guess, plus the guess it answers. Adopted only
+        # if the committed transcript is IDENTICAL — a reply to a sentence the caller
+        # had not finished is worse than waiting for the one they did.
+        "gen": None, "gen_for": None}
 
     async def cancel_current():
         t = task["cur"]
@@ -1044,9 +1175,10 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                 pass
         task["cur"] = None
 
-    async def launch(text, heard):
+    async def launch(text, heard, precomputed=None):
         await cancel_current()   # barge-in: abandon any in-flight reply
-        task["cur"] = asyncio.create_task(_turn_guarded(sock, session, text, heard))
+        task["cur"] = asyncio.create_task(
+            _turn_guarded(sock, session, text, heard, precomputed))
 
     idle_task = None                     # declared here so `finally` can always stop it
     try:
@@ -1086,7 +1218,7 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                         audio = await run_in_threadpool(session.tts_bytes, line)
                         await _send_audio(sock, {"type": "reply", "text": line, "heard": "",
                                                  "action": {"type": "none"},
-                                                 "timings": {}}, audio)
+                                                 "timings": {}}, audio, session=session)
                         await asyncio.sleep(2.5)      # let it actually play
                         await sock.close()
                         return
@@ -1098,7 +1230,7 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                         audio = await run_in_threadpool(session.tts_bytes, line)
                         await _send_audio(sock, {"type": "reply", "text": line, "heard": "",
                                                  "action": {"type": "none"},
-                                                 "timings": {}}, audio)
+                                                 "timings": {}}, audio, session=session)
                 except Exception:  # noqa: BLE001  (socket gone, or shutting down)
                     return
 
@@ -1170,6 +1302,7 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                     elif mtype == "cancel":         # pure barge-in signal (user started speaking)
                         spec["armed"] = False
                         spec["text"] = None
+                        _void_speculation(spec)
                         await cancel_current()
                     elif mtype == "stt_hint":
                         # "spec": the next audio frame is a GUESS — the caller has gone
@@ -1181,6 +1314,7 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                         else:
                             spec["armed"] = False
                             spec["text"] = None
+                            _void_speculation(spec)
                     elif mtype == "commit":
                         # Endpoint confirmed. If a speculative transcript is waiting, the
                         # turn starts with ZERO STT on the clock.
@@ -1225,14 +1359,35 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                                 "type": "reply", "text": line, "heard": text,
                                 "action": det["action"] if det else {"type": "none"},
                                 "escalated": bool(det and det.get("escalated")),
-                                "timings": {}}, audio)
+                                "timings": {}}, audio, session=session)
                             _record_turn(call_id_var.get(), session.pack.get("id"),
                                          text, line, session.reply_language(text), None)
                         elif text:
                             spec["prompted"] = False
+                            # Was this exact sentence already answered while they paused?
+                            pre = None
+                            gen, gen_for = spec.get("gen"), spec.get("gen_for")
+                            if gen is not None and gen_for == text:
+                                try:
+                                    pre = await gen
+                                except asyncio.CancelledError:
+                                    pre = None
+                                except Exception as e:  # noqa: BLE001
+                                    log.debug("speculative reply failed (%s) — "
+                                              "generating normally", e)
+                                    pre = None
+                                if pre:
+                                    log.info("commit: the reply was already generated "
+                                             "while the caller paused")
+                            elif gen is not None:
+                                # A DIFFERENT sentence arrived. The work is void, and
+                                # keeping it would answer words nobody said.
+                                log.info("commit: transcript changed after the guess — "
+                                         "discarding the speculative reply")
+                            _void_speculation(spec)
                             log.info("commit: speculative transcript used (%r)",
                                      text[:60] if LOG_TRANSCRIPTS else f"<{len(text)} chars>")
-                            await launch(text, text)
+                            await launch(text, text, precomputed=pre)
                         else:
                             # NO usable guess — and the client took `commit` to mean the
                             # words were already here, so it discarded the recording. Both
@@ -1281,7 +1436,7 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                         sample = "Hello, this is how I'll sound. How can I help you today?"
                         a = await run_in_threadpool(session.tts_bytes, sample)
                         await _send_audio(sock, {"type": "voice_sample", "voice": session.voice,
-                                                 "text": sample}, a)
+                                                 "text": sample}, a, session=session)
 
                 # ---- binary mic audio (fed straight to STT — no disk round-trip) ----
                 elif msg.get("bytes") is not None:
@@ -1297,15 +1452,31 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                         if speculative:
                             await _dropped(sock, "frame too large")
                         if not speculative:
-                            line = session.safe_say("repeat")
+                            line = session.safe_say(session.repair_kind())
                             audio = await run_in_threadpool(session.tts_bytes, line)
                             await _send_audio(sock, {"type": "reply", "text": line, "heard": "",
                                                      "action": {"type": "none"},
-                                                     "timings": {}}, audio)
+                                                     "timings": {}}, audio, session=session)
                         continue
                     # Split the turn by speaker and keep only the caller's parts BEFORE
                     # transcription, so a colleague talking in a gap never reaches Whisper.
                     # Returns the original bytes whenever anything is uncertain.
+                    # Is this us? Judged on RAW audio, before isolation or denoising —
+                    # a denoiser reshapes the echo enough to break the correlation, and
+                    # isolation would happily trim our own voice into something
+                    # unrecognisable. Browser calls have real AEC underneath, so this
+                    # almost never fires there; a phone line has nothing else at all.
+                    own, corr = await run_in_threadpool(session.is_own_echo, raw)
+                    if own:
+                        log.info("mic turn ignored: our own audio coming back "
+                                 "(correlation %.2f)", corr)
+                        # No _insight here: it is defined further down this handler and
+                        # calling it from above would be a NameError on the one path
+                        # that only fires in production. The drop is what the client
+                        # needs — it entered "thinking" the moment it sent this.
+                        await _dropped(sock, "our own echo")
+                        continue
+
                     audio, dia = await run_in_threadpool(session.clean_audio, raw)
                     heard = ""
                     try:
@@ -1375,14 +1546,34 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                         # Now that there are WORDS, we can do better than counting
                         # silence: "मेरा मोबाइल नंबर" is a finished noun phrase and an
                         # unfinished sentence. Tell the client to keep listening.
+                        want_phone = (session.pending_slot
+                                      or session.last_asked_slot) == "phone"
                         spec["incomplete"] = bool(heard) and looks_incomplete(
-                            heard, expect_phone=(session.pending_slot == "phone"))
+                            heard, expect_phone=want_phone)
+                        # …and the inverse. Silence cannot tell "finished" from
+                        # "thinking", but a completed phone number or a bare "haan" can:
+                        # nothing follows either, so waiting the full window for a word
+                        # that is already done is most of what makes a call feel slow.
+                        spec["settled"] = bool(heard) and looks_complete(
+                            heard, expect_phone=want_phone)
                         log.info("spec STT: %s bytes → heard=%r%s", len(raw),
                                  heard if LOG_TRANSCRIPTS else f"<{len(heard)} chars>",
                                  " [sounds unfinished]" if spec["incomplete"] else "")
                         if heard:
                             await sock.send_json({"type": "partial", "text": heard,
-                                                  "complete": not spec["incomplete"]})
+                                                  "complete": not spec["incomplete"],
+                                                  "settled": spec["settled"]})
+                        # Start answering it NOW, while they may still be pausing. Only
+                        # when the words look FINISHED: replying to half a sentence is
+                        # worse than waiting for the whole one, and a half-spoken phone
+                        # number must never reach the guard, which grounds numbers
+                        # against the caller's complete words.
+                        _void_speculation(spec)
+                        if (SPECULATIVE_REPLY and heard and not spec["incomplete"]
+                                and session.llm is not None):
+                            spec["gen_for"] = heard
+                            spec["gen"] = asyncio.create_task(
+                                _speculate_reply(session, heard))
                         continue
                     spec["text"] = None            # a full frame supersedes any guess
                     if heard:
@@ -1402,7 +1593,7 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                         audio_out = await run_in_threadpool(session.tts_bytes, line)
                         await _send_audio(sock, {"type": "reply", "text": line, "heard": "",
                                                  "action": {"type": "none"},
-                                                 "timings": {}}, audio_out)
+                                                 "timings": {}}, audio_out, session=session)
                     else:
                         # Nothing recognisable in it. A short clip is a cough or a door
                         # and deserves silence — but a LONG one was somebody really
@@ -1419,14 +1610,14 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                         secs = len(raw) / 32000.0          # 16k mono PCM16
                         if secs >= REPEAT_ASK_S and not spec.get("asked_repeat"):
                             spec["asked_repeat"] = True    # once per run of failures
-                            line = session.safe_say("repeat")
+                            line = session.safe_say(session.repair_kind())
                             log.info("mic turn: %.1fs of audio, nothing recognisable — "
                                      "asking the caller to repeat", secs)
                             audio_out = await run_in_threadpool(session.tts_bytes, line)
                             await _send_audio(sock, {"type": "reply", "text": line,
                                                      "heard": "",
                                                      "action": {"type": "none"},
-                                                     "timings": {}}, audio_out)
+                                                     "timings": {}}, audio_out, session=session)
                         else:
                             # The client set itself to "thinking" the moment it sent this
                             # audio and only leaves that state on a reply — tell it the
@@ -1460,14 +1651,14 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
             _stash[sid] = {"session": session, "expires": time.time() + RESUME_TTL}
 
 
-async def _run_turn(sock, session, text, heard=None):
+async def _run_turn(sock, session, text, heard=None, precomputed=None):
     """Dispatch to streaming, with a safe fallback on any error.
     `heard` is the transcript for VOICE turns (echoed to the UI) and None/"" for
     typed text (the client already shows the typed bubble — don't echo it back)."""
     heard = heard or ""
     if STREAMING:
         try:
-            await _stream_turn(sock, session, text, heard)
+            await _stream_turn(sock, session, text, heard, precomputed)
             return
         except (asyncio.CancelledError, WebSocketDisconnect):
             raise                         # barge-in / client gone — do NOT re-run the turn

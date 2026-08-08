@@ -179,6 +179,15 @@ server:
   slow_filler_seconds: 2.0   # if a reply takes longer than this, speak a language-matched
                              #   "let me check…" filler so the caller never hears dead air. 0=off.
   max_sessions: 6            # MEASURED on this CPU (M1 Pro, qwen3:4b via Ollama/Metal):
+
+  # --- naturalness & telephony (all measured; see docs/EXPLAINED.md) ----------
+  backchannel: true          # a quiet "mm-hm" at a pause on a long turn, so the agent
+                             #   is not silent and then abruptly speaking. Once per
+                             #   turn, ducked, never over a word.
+  speculative_reply: true     # answer the guess while the caller may still be pausing;
+                             #   adopted ONLY if the committed transcript is identical.
+                             #   Saves the gap between 450ms speculation and the 800-
+                             #   1200ms endpoint. Read-only on the session.
                              #   concurrent   first audio   total turn
                              #        1           2.0s         4.3s
                              #        6           2.0s         9.6s

@@ -777,6 +777,124 @@ always re-measure the thing that actually ships.
 
 ---
 
+## 5.6 Sounding like a person, and reaching a phone
+
+Five changes aimed at the two things that are not model quality: how it *feels*, and
+whether it can be reached at all.
+
+### The repair line says why
+
+`room_snr_db()` runs on every turn — it was previously computed *inside* the denoise
+branch, so with the toggle off (the default) it never ran at all, and the inspector
+showed no room reading either. Hoisted, it costs two numpy percentiles and it buys this:
+
+```
+   before   "Sorry, could you say that again?"         every failure, identical
+   after    < 6 dB   "there's a lot of background noise — could you move somewhere
+                      quieter?"                        because repeating will not help
+            < 11 dB  "the line isn't very clear…"
+            else     the plain line
+            unknown  the plain line — never invent a diagnosis
+```
+
+Twelve languages plus romanised Hindi. Deliberately **not** applied to the
+missing-STT path: blaming the caller's background noise for our absent model would be a
+confident lie.
+
+### Closing the turn when the words are finished
+
+`looks_incomplete()` already reads the words to *extend* the window. `looks_complete()`
+is the inverse and is much stricter, because the two mistakes are not symmetrical:
+
+```
+   a false "incomplete"   costs the caller a pause
+   a false "complete"     CHOPS THEIR SENTENCE IN HALF   ← the failure already tuned
+                                                            for twice
+```
+
+So it fires on exactly two shapes that admit no continuation — a phone number that has
+reached full length when a phone is what we asked for, and a bare yes/no alone. Not a
+name ("Manu" then "Mishra"), not a time ("tomorrow" then "morning"). Those close at
+400 ms instead of 800–1200.
+
+### A listening noise
+
+A filler covers *our* silence while we think. A backchannel is what a listener says
+while the *other* person is still talking, and its absence is the most machine-like
+thing about a long turn. Pre-loaded to the client at greeting time so it lands in the
+pause itself rather than after it, then gated on four conditions — once per turn, only
+past 2.6 s, only into a real gap, never while we are speaking. Each one removes a way it
+becomes an interruption, which is far worse than staying silent.
+
+### Hearing ourselves
+
+```
+   real AEC   y[n] − ŷ[n]    subtract a prediction, keep the residual
+   this       keep or drop   a whole frame, on the evidence
+```
+
+Normalised cross-correlation against what we played. Measured across 16 conditions:
+
+```
+   our own voice — any delay, any attenuation, plus room noise    0.99 – 1.00
+   the caller, a fan, white noise, the caller OVER our echo       0.01 – 0.27
+                                                    threshold 0.62, in the gap
+```
+
+Refusing a frame can only lose audio that was mostly echo; subtracting badly can corrupt
+audio that was mostly the caller. Given the browser already has real AEC underneath,
+the conservative one is right — and it composes with a proper AEC later rather than
+blocking it. Fails open everywhere.
+
+*Found while building it:* probing the head of the frame scored a 300 ms-delayed echo at
+0.451 and passed it straight through. Echo is **always** delayed, so that was the only
+case that mattered and it was the one that failed. Probing the loudest window instead
+made it independent of where in the frame the echo begins.
+
+### Answering before they finish
+
+STT already comes off the critical path when the guess is right. This takes the LLM off
+it too: generate against the speculative transcript, adopt the result only if the
+committed transcript is **identical**, discard otherwise.
+
+The constraint that shapes it: **a guess never mutates session state.** `begin_user`
+appends history and folds the caller's numbers into the grounding set, and this system
+has already been broken once by letting a guess mutate state — a voiceprint enrolled
+from a speculative fragment locked a caller out for a whole call. So the speculative
+path builds its messages by hand, streams into a buffer, and touches nothing; the reply
+is then replayed through the *same* loop the live stream uses, so the guard, the
+sentence splitter and the history behave identically.
+
+*Measured and rejected first:* speculative **prefill** — warming the KV cache with the
+guessed turn — saves only 116–127 ms, because the 6,089-token prefix is already cached
+and the user turn is 20–40 tokens. Not worth an extra round-trip.
+
+### A seam for a phone number
+
+```
+   recv_audio()   16 kHz mono float32, one utterance at a time
+   send_audio()   the same, back
+   send_text()    what was said
+   hangup()
+```
+
+Four methods. Everything above — isolation, the gate, the guard, the router — is already
+transport-agnostic and stays untouched. What a browser supplies free and a carrier does
+not is supplied here: μ-law, resampling, and an endpointer using the *same* windows the
+browser learned from real callers being cut off.
+
+The μ-law codec is hand-written rather than `audioop`, which was removed in Python 3.13 —
+the telephony path is the part aimed squarely at the future and should not be the first
+thing to break on a modern interpreter. Pinned at 99.5 % byte-identical to the stdlib
+implementation while that still exists to compare against.
+
+Pipecat is an **optional** dependency used for transport only. It has no diarization and
+no voice isolation, so wiring its STT/LLM/TTS would trade away the parts of this codebase
+that took the most work — but Exotel and Plivo are built in, and that is the one piece
+here that cannot be written in an afternoon.
+
+---
+
 ## 6. Why a call can never wedge
 
 The client enters "thinking" the instant it ships audio, and only leaves on a reply. So
