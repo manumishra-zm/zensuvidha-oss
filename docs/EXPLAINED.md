@@ -950,6 +950,84 @@ guard: a latched clip scored the real caller **0.07** against their own voice.
 
 ---
 
+## 5.8 Answering without the model
+
+Some questions are asked almost word-for-word, constantly — *"what are your timings"*,
+*"what is the consultation fee"* — and the pack already carries the answer written out,
+in every language it supports. Generating that sentence is strictly worse than quoting
+it:
+
+```
+   fast path (quote the pack)        0.45 ms
+   LLM generation, same answer       3219 ms
+                                     ────────
+   saved                             3218 ms     ~7000×
+
+   …and the same reply in Telugu, which inflates 6.2×:
+   generate  ≈ 20 s        quote  = 0 s   (the pack carries `a_te`)
+```
+
+Three things follow from skipping the model, and each is worth more here than it would
+be elsewhere: it **cannot invent**, because the sentence *is* the fact — the grounding
+guard has nothing to catch. It costs **no generation**, which matters most in exactly
+the languages where latency hurts. And it is **deterministic**, so the same question
+gets the same answer every time.
+
+### What decides whether it fires
+
+Calibrated from the distribution, not guessed — the 0.55 speaker threshold was chosen on
+synthetic audio and proved wrong by more than 2×:
+
+```
+   English, near-verbatim    0.63 – 1.00      "what are the timings", "what's the fee"
+   off-topic                 0.15 – 0.41      "tell me a joke", "who won the election"
+   INDIC, near-verbatim      0.21 – 0.49      ← overlaps off-topic
+                                        threshold 0.55, plus a 0.15 margin over runner-up
+```
+
+So it answers English confidently and **declines for Indic** — which is the correct
+answer rather than a shortcoming to paper over. An Indic question is matched against the
+pack's `k_hi` / `k_te` *keyword lists*, and a natural sentence does not look like a
+keyword list. Those callers take the normal path, exactly as they do today.
+
+The honest irony: the fast path helps English most, and Indic is where latency actually
+hurts. Closing that is precisely what a neural backend is for — and the measurement
+above is the argument for enabling one, not a claim that the default already does it.
+
+### Why char n-grams are the default
+
+```
+   char n-gram TF-IDF     no dependency · every script · handles Indic morphology
+   neural embeddings      better at PARAPHRASE · ~1.2GB · opt-in
+```
+
+"సమయం" and "సమయంలో" share every n-gram and are different words — the shipping retriever
+needed a hand-written prefix rule for exactly this. What n-grams *cannot* reach is true
+paraphrase: *"how much to see a doctor"* against *"what is the consultation fee"* shares
+almost no characters. That is the gap the neural backend closes, and requiring a gigabyte
+of weights to answer *"what are your timings"* is the wrong default for a project whose
+whole premise is running on a laptop.
+
+### The other two uses of the same index
+
+**Ranking.** Measured on the shipping retriever: rank 1 was always the business *name*
+and rank 2 often the *address*, with about half the injected facts irrelevant — which is
+precisely the documented failure of a 4B model here, that it answers the easy question
+(the address) and drops the one that was asked. We were feeding it the distraction.
+Reordering is free: those facts are appended *after* the cache-stable prefix either way.
+
+**Rescue.** When the model is unreachable or breaks mid-stream, the reply today is
+"I don't have that detail" — sometimes to a question written down three lines away in
+the knowledge base. Now the pack is consulted before giving up.
+
+### What it will not do
+
+It never fires **mid-booking**. The caller is answering *our* questions, and a knowledge
+fact dropped into slot collection abandons the collection — the same rule
+`recovery_line` already follows.
+
+---
+
 ## 6. Why a call can never wedge
 
 The client enters "thinking" the instant it ships audio, and only leaves on a reply. So

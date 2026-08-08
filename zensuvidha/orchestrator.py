@@ -220,6 +220,17 @@ def _strip_name_frame(value: str) -> str:
 # Off in the browser is defensible — getUserMedia already cancels — but it costs ~12ms
 # on a 1070ms path and is the only defence a phone line has, so it ships on.
 ECHO_SUPPRESSION = True
+# Semantic knowledge search. The default backend is dependency-free char
+# n-grams; set a sentence-transformers model name to use embeddings instead.
+SEMANTIC_ON = True
+SEMANTIC_MODEL = None
+try:            # config overrides, if the file is readable
+    from .config import load_config as _lc
+    _sv = (_lc().get("server") or {})
+    SEMANTIC_ON = bool(_sv.get("semantic", True))
+    SEMANTIC_MODEL = _sv.get("semantic_model") or None
+except Exception:  # noqa: BLE001
+    pass
 
 _HESITATIONS = frozenset("""
 hmm hm hmmm uh uhh um umm er err ah aah oh ok okay yeah yep yes no nope sure right
@@ -807,6 +818,13 @@ class Session:
         entries = [(f"{it.get(kkey, '')} {it.get('q', '')}", it[key]) for it in kb if it.get(key)]
         entries += [(s.get("name", ""), s[key]) for s in (pack.get("services") or []) if s.get(key)]
         picked = self._relevant(entries, query, self.NATIVE_FACTS_PER_TURN)
+        # Re-rank with the semantic index when one is available. Measured on the
+        # shipping retriever: rank 1 was always the business NAME and rank 2 often the
+        # ADDRESS, with about half the injected facts irrelevant — which is exactly the
+        # documented failure of a 4B model here (it answers the easy question, the
+        # address, and drops the one that was asked). Reordering costs nothing: these
+        # facts are appended AFTER the cache-stable prefix either way.
+        picked = self._resort_semantically(picked, query, code) or picked
         biz = pack.get("business", {})
         head = [f"- {biz[f'{k}_{code}']}" for k in ("name", "hours", "address")
                 if biz.get(f"{k}_{code}")]
@@ -1001,6 +1019,70 @@ class Session:
         if snr < self.FAINT_BELOW_DB:
             return "faint"
         return "repeat"
+
+    def knowledge_index(self):
+        """The pack's semantic index, or None if it could not be built."""
+        if not SEMANTIC_ON:
+            return None
+        from . import semantic
+        return semantic.index_for(self.pack, SEMANTIC_MODEL)
+
+    def _resort_semantically(self, picked, query, code):
+        """Reorder the chosen facts so the most relevant one is FIRST.
+
+        Order matters more than it looks: a small model reads the top of the block and
+        gives up on the rest, so putting the address first is how the address gets
+        answered instead of the question.
+        """
+        idx = self.knowledge_index()
+        if idx is None or not picked:
+            return None
+        from . import semantic
+        want = [a for _q, a in picked]
+        ranked = idx.search(query, k=len(picked))
+        best = [semantic.answer_in(e, code) for _s, e in ranked]
+        keep = [(q, a) for q, a in picked if a in best]
+        rest = [(q, a) for q, a in picked if a not in best]
+        keep.sort(key=lambda qa: best.index(qa[1]))
+        out = keep + rest
+        return out if len(out) == len(picked) else None
+
+    def quick_answer(self, query: str):
+        """Answer straight from the pack when the question is unmistakably one it has.
+
+        No LLM call at all. Three things follow from that, and each is worth more here
+        than it would be in most systems:
+
+          * it cannot invent — the sentence IS the pack's fact, so the grounding guard
+            has nothing to catch;
+          * it costs no generation — a 35-word Telugu reply is 7.3s to generate at the
+            measured 38.7 tok/s and 0s to quote, because the pack already carries it
+            written out in the caller's language;
+          * it is deterministic, so the same question gets the same answer every time.
+
+        Returns (text, why) or (None, why). Declines unless the match is both strong and
+        clearly ahead of the runner-up: "is there parking" and "where are you" are
+        neighbours, and a confident wrong answer on a phone call is far worse than a
+        slower right one.
+        """
+        idx = self.knowledge_index()
+        if idx is None or not (query or "").strip():
+            return None, "no index"
+        # Never short-circuit a BOOKING. The caller is answering our questions, and a
+        # knowledge fact in the middle of slot collection abandons the collection —
+        # the same rule `recovery_line` already follows.
+        if self.booking_started or self.pending_slot:
+            return None, "mid-booking"
+        from . import semantic
+        entry, score, why = idx.direct(query)
+        if entry is None:
+            return None, why
+        lang, _roman = self.reply_style(query)
+        code = NAME_TO_CODE.get(lang or "") or "en"
+        text = semantic.answer_in(entry, code)
+        if not text:
+            return None, "no answer text for this language"
+        return text, why
 
     def booking_ref(self, bid) -> str:
         """"Your booking reference is #12." — in the caller's own language."""

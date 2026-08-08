@@ -729,6 +729,30 @@ async def _stream_turn(sock, session, user_text, heard, precomputed=None):
     # deterministic safety escalation — no model call
     session.filled_last_turn, session.filled_this_turn = session.filled_this_turn, False
     sc = session.begin_user(user_text)
+
+    # THE FAST PATH. Some questions are asked almost word-for-word, constantly —
+    # "what are your timings", "what is the consultation fee" — and the pack already
+    # carries the answer written out. Speaking it skips the model entirely: it cannot
+    # invent, so the grounding guard has nothing to catch; it costs no generation, which
+    # matters most in the languages that inflate 6.2×; and it is deterministic, so the
+    # same question gets the same answer every time.
+    #
+    # It DECLINES unless the match is unmistakable. Answering the neighbouring question
+    # confidently is worse than taking the slower path — see semantic.DIRECT_SCORE.
+    if not sc:
+        quick, why = await run_in_threadpool(session.quick_answer, user_text)
+        if quick:
+            log.info("fast path: answered from the pack, no model call (%s)", why)
+            await _speak_chunk(sock, session, quick, 1)
+            session.finalize(json.dumps({"kind": "answer", "say": quick,
+                                         "action": {"type": "none"}},
+                                        ensure_ascii=False))
+            await sock.send_json({"type": "reply_end", "text": quick,
+                                  "action": {"type": "none"}, "escalated": False,
+                                  "timings": {"total_ms": _ms(t0), "fast_path": True}})
+            _record_turn(call_id_var.get(), session.pack.get("id"), user_text, quick,
+                         session.reply_language(user_text), _ms(t0))
+            return
     if sc:
         await _speak_chunk(sock, session, sc["say"], 1)
         await sock.send_json({"type": "reply_end", "text": sc["say"], "action": sc["action"],
@@ -1715,6 +1739,22 @@ async def _run_turn(sock, session, text, heard=None, precomputed=None):
             log.warning("stream failed, falling back: %s", e)
         except Exception as e:  # noqa: BLE001
             log.warning("stream error, falling back: %s", e)
+        # The model is unreachable or broke mid-stream. Before dropping to the blocking
+        # path — which needs the same model — see whether the pack simply contains the
+        # answer. "I don't have that detail" is the wrong reply to a question written
+        # down three lines away in the knowledge base.
+        try:
+            quick, why = await run_in_threadpool(session.quick_answer, text)
+        except Exception:  # noqa: BLE001
+            quick = None
+        if quick:
+            log.info("rescue: the model failed but the pack answers this (%s)", why)
+            audio = await run_in_threadpool(session.tts_bytes, quick)
+            await _send_audio(sock, {"type": "reply", "heard": heard, "text": quick,
+                                     "action": {"type": "none"},
+                                     "timings": {"rescued": True}}, audio,
+                              session=session)
+            return
     await _fallback_turn(sock, session, text=text, heard=heard)
 
 

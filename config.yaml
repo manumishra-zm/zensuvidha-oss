@@ -195,6 +195,18 @@ server:
                              #   serialises — at 24 a turn would take 30-40s. Raise this
                              #   to 24 with config.gpu.yaml, where the LLM is not the
                              #   bottleneck.
+
+  # --- semantic knowledge search (zensuvidha/semantic.py) ---------------------
+  semantic: true             # rank the per-turn facts by relevance, and answer the
+                             #   questions people ask word-for-word STRAIGHT from the
+                             #   pack — no model call, so it cannot invent and costs no
+                             #   generation. Measured: 0.45ms vs 3219ms for the same
+                             #   answer, and the pack already carries a_hi/a_te.
+  semantic_model: null       # null = char n-grams, no download, works in every script.
+                             #   Set a sentence-transformers name (e.g. a Qwen3-Embedding
+                             #   model) to handle PARAPHRASE — measured, that is what
+                             #   Indic queries need, and it is the only way the fast path
+                             #   reaches the languages where latency hurts most.
   allow_clone: true          # enable /voice/clone (set false in public prod)
   max_upload_bytes: 6000000  # reject clone uploads larger than this (~6 MB)
 
