@@ -198,3 +198,37 @@ def test_the_cache_is_bounded():
     assert "_PACK_CACHE" in dir(packs)
     src = open(packs.__file__, encoding="utf-8").read()
     assert "_PACK_CACHE.clear()" in src, "the cache has no bound"
+
+
+# ── the neural backend, if anyone enables one ─────────────────────────────────
+
+def test_the_instruction_prefix_is_used_when_the_model_ships_one():
+    """Not optional for these models. Measured on Qwen3-Embedding-0.6B:
+
+        no prefix                indic 0.54-0.81   off-topic 0.43-0.66   OVERLAPS
+        WITH instruction prefix  indic 0.47-0.69   off-topic 0.25-0.40   separable
+
+    Without it the model compresses everything into one high band and "tell me a joke"
+    scores as well as a real question — it is the difference between working and not.
+    """
+    import inspect
+    src = inspect.getsource(S.NeuralBackend)
+    assert "prompt_name" in src, "the instruction prefix is not being used"
+    assert '"query"' in src and '"document"' in src, "queries and documents must differ"
+
+
+def test_the_neural_backend_has_its_own_threshold():
+    """Neural cosine sits on a different scale — the lexical 0.55 would let off-topic
+    through, because everything scores higher."""
+    assert S.NEURAL_DIRECT_SCORE < S.DIRECT_SCORE
+    import inspect
+    src = inspect.getsource(S.KnowledgeIndex.direct)
+    assert "NeuralBackend" in src, "one threshold is being applied to both backends"
+
+
+def test_a_missing_neural_model_falls_back_rather_than_failing_the_call():
+    """A pack must still be searchable when the model is absent, wrong, or unloadable.
+    Everything optional in this pipeline fails open."""
+    idx = S.KnowledgeIndex(load_pack("clinic"), "this/model-does-not-exist")
+    assert isinstance(idx.backend, S.LexicalBackend)
+    assert idx.search("what are your timings", k=1), "fallback ranking is broken"

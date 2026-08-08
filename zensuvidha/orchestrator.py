@@ -224,11 +224,13 @@ ECHO_SUPPRESSION = True
 # n-grams; set a sentence-transformers model name to use embeddings instead.
 SEMANTIC_ON = True
 SEMANTIC_MODEL = None
+SEMANTIC_DEVICE = None
 try:            # config overrides, if the file is readable
     from .config import load_config as _lc
     _sv = (_lc().get("server") or {})
     SEMANTIC_ON = bool(_sv.get("semantic", True))
     SEMANTIC_MODEL = _sv.get("semantic_model") or None
+    SEMANTIC_DEVICE = _sv.get("semantic_device") or None
 except Exception:  # noqa: BLE001
     pass
 
@@ -1025,7 +1027,7 @@ class Session:
         if not SEMANTIC_ON:
             return None
         from . import semantic
-        return semantic.index_for(self.pack, SEMANTIC_MODEL)
+        return semantic.index_for(self.pack, SEMANTIC_MODEL, SEMANTIC_DEVICE)
 
     def _resort_semantically(self, picked, query, code):
         """Reorder the chosen facts so the most relevant one is FIRST.

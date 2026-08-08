@@ -70,6 +70,16 @@ NGRAM = 3
 DIRECT_SCORE = 0.55
 DIRECT_MARGIN = 0.15
 
+# A neural backend scores on a DIFFERENT SCALE — everything sits higher, so 0.55 would
+# let off-topic through. Measured with the instruction prefix on Qwen3-Embedding-0.6B:
+#
+#   Indic near-verbatim   0.47 - 0.69
+#   off-topic             0.25 - 0.40
+#
+# 0.44 sits in that gap, and unlike the lexical backend it reaches INDIC — which is the
+# entire reason to pay 1.2GB and a torch dependency for this.
+NEURAL_DIRECT_SCORE = 0.44
+
 # Ranking is a softer job — a slightly-off fact merely wastes a prompt slot.
 RANK_FLOOR = 0.08
 
@@ -140,25 +150,42 @@ class NeuralBackend:
     no characters, and that is the case n-grams genuinely cannot reach.
     """
 
-    def __init__(self, docs: list[str], model_name: str):
+    def __init__(self, docs: list[str], model_name: str, device: str | None = None):
         from sentence_transformers import SentenceTransformer   # optional dependency
         self.name = f"neural:{model_name}"
-        self._m = SentenceTransformer(model_name)
+        self._m = SentenceTransformer(model_name, device=device) if device \
+            else SentenceTransformer(model_name)
+        # These models are TRAINED with an instruction prefix, and it is not optional.
+        # Measured on Qwen3-Embedding-0.6B, Indic queries against off-topic ones:
+        #
+        #   no prefix                indic 0.54-0.81   off-topic 0.43-0.66   OVERLAPS
+        #   WITH instruction prefix  indic 0.47-0.69   off-topic 0.25-0.40   separable
+        #
+        # Without it the model compresses everything into one high-similarity band and
+        # "tell me a joke" scores as well as a real question. The prefix is the whole
+        # difference between this working and not.
+        self._prompts = set(getattr(self._m, "prompts", {}) or {})
         # Encoded ONCE per pack. Only the query is encoded per turn, which is what keeps
         # this affordable — the knowledge base does not change mid-call.
-        self._doc = self._m.encode(docs, normalize_embeddings=True,
-                                   convert_to_numpy=True)
+        self._doc = self._encode(docs, "document")
+
+    def _encode(self, texts, kind):
+        kw = {"normalize_embeddings": True, "convert_to_numpy": True}
+        if kind in self._prompts:
+            kw["prompt_name"] = kind
+        return self._m.encode(list(texts), **kw)
 
     def scores(self, query: str) -> list[float]:
         import numpy as np
-        q = self._m.encode([query], normalize_embeddings=True, convert_to_numpy=True)
+        q = self._encode([query], "query")
         return list(np.asarray(self._doc @ q[0], dtype="float64"))
 
 
 class KnowledgeIndex:
     """Searchable view of one pack's knowledge, in every language it carries."""
 
-    def __init__(self, pack: dict, model_name: str | None = None):
+    def __init__(self, pack: dict, model_name: str | None = None,
+                 device: str | None = None):
         self.entries: list[dict] = ((pack.get("knowledge") or [])
                                     + (pack.get("common") or []))
         # What a caller might SAY for each entry: the English question, its tags, and the
@@ -185,7 +212,7 @@ class KnowledgeIndex:
         if docs:
             if model_name:
                 try:
-                    self.backend = NeuralBackend(docs, model_name)
+                    self.backend = NeuralBackend(docs, model_name, device)
                 except Exception as e:  # noqa: BLE001
                     log.warning("semantic: neural backend unavailable (%s) — "
                                 "falling back to char n-grams", e)
@@ -224,14 +251,17 @@ class KnowledgeIndex:
             return None, 0.0, ""
         best, entry = hits[0]
         runner = hits[1][0] if len(hits) > 1 else 0.0
-        if best < DIRECT_SCORE:
-            return None, best, f"best match {best:.2f} < {DIRECT_SCORE}"
+        floor = (NEURAL_DIRECT_SCORE if isinstance(self.backend, NeuralBackend)
+                 else DIRECT_SCORE)
+        if best < floor:
+            return None, best, f"best match {best:.2f} < {floor}"
         if best - runner < DIRECT_MARGIN:
             return None, best, f"only {best - runner:.2f} ahead of the next entry"
         return entry, best, f"matched {entry.get('q', '?')!r} at {best:.2f}"
 
 
-def index_for(pack: dict, model_name: str | None = None) -> KnowledgeIndex | None:
+def index_for(pack: dict, model_name: str | None = None,
+              device: str | None = None) -> KnowledgeIndex | None:
     """The index for this pack, built once and cached on it.
 
     Cached on the dict rather than by id(): CPython reuses addresses after a free, so an
@@ -242,7 +272,7 @@ def index_for(pack: dict, model_name: str | None = None) -> KnowledgeIndex | Non
         got = pack.get(_INDEX_KEY)
         if got is not None:
             return got
-        idx = KnowledgeIndex(pack, model_name)
+        idx = KnowledgeIndex(pack, model_name, device)
     except Exception as e:  # noqa: BLE001
         # The cache READ was outside the guard, so a pack that raises on .get()
         # propagated straight out of a function whose whole contract is "returns None

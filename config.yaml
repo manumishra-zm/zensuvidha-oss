@@ -202,11 +202,24 @@ server:
                              #   pack — no model call, so it cannot invent and costs no
                              #   generation. Measured: 0.45ms vs 3219ms for the same
                              #   answer, and the pack already carries a_hi/a_te.
+  semantic_device: null      # null = auto. "mps" is 40ms/query on an M1 against 150ms
+                             #   on CPU — worth setting if you enable a neural model.
   semantic_model: null       # null = char n-grams, no download, works in every script.
                              #   Set a sentence-transformers name (e.g. a Qwen3-Embedding
                              #   model) to handle PARAPHRASE — measured, that is what
                              #   Indic queries need, and it is the only way the fast path
                              #   reaches the languages where latency hurts most.
+                             #
+                             # MEASURED with Qwen3-Embedding-0.6B on an M1 Pro:
+                             #   cold load 243s · warm query 40ms (mps) / 150ms (cpu)
+                             #   index 60 entries ~1.8s, once, cached with the pack
+                             #   Indic 0.47-0.69 vs off-topic 0.25-0.40 → separable,
+                             #   which char n-grams are NOT (0.21-0.49 vs 0.15-0.41).
+                             #
+                             # CONFLICT, and it matters: Qwen3 needs transformers>=4.51
+                             # while parler-tts pins ==4.46.1 — and parler is the Indic
+                             # TTS. In one environment you can have Indic RETRIEVAL or
+                             # Indic SPEECH, not both. On the GPU preset, prefer speech.
   allow_clone: true          # enable /voice/clone (set false in public prod)
   max_upload_bytes: 6000000  # reject clone uploads larger than this (~6 MB)
 

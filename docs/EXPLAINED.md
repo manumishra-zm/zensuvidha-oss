@@ -1008,6 +1008,41 @@ almost no characters. That is the gap the neural backend closes, and requiring a
 of weights to answer *"what are your timings"* is the wrong default for a project whose
 whole premise is running on a laptop.
 
+**Measured with Qwen3-Embedding-0.6B, on this machine:**
+
+```
+   cold load           243 s        once, at startup
+   warm query           40 ms mps · 150 ms cpu
+   index 60 entries    1.8 s        once, cached with the pack
+```
+
+It does close the Indic gap the lexical backend cannot:
+
+```
+                       char n-gram              Qwen3-Embedding
+   Indic near-verbatim   0.21 – 0.49              0.47 – 0.69
+   off-topic             0.15 – 0.41              0.25 – 0.40
+                          OVERLAPS                 SEPARABLE
+```
+
+**But only when used correctly, and that turned out to be the whole story.** These
+models are trained with an instruction prefix, and without it they compress everything
+into one high-similarity band:
+
+```
+   no prefix                indic 0.54 – 0.81   off-topic 0.43 – 0.66   OVERLAPS
+   WITH instruction prefix  indic 0.47 – 0.69   off-topic 0.25 – 0.40   separable
+```
+
+The first version of `NeuralBackend` did not use it. Measured that way the model looked
+useless — which would have been the wrong conclusion, drawn from the wrong usage.
+
+**And there is a conflict worth knowing before you enable it.** Qwen3-Embedding needs
+`transformers >= 4.51`; `parler-tts` pins `== 4.46.1`, and parler is the Indic TTS. In
+one environment you can have Indic *retrieval* or Indic *speech*, not both. On the GPU
+preset, prefer the speech — a caller who cannot hear an answer is worse off than one
+whose answer took the normal path to reach them.
+
 ### What made it affordable
 
 `load_pack()` re-read and re-merged two YAML files on **every session** — 51 ms, paid at
