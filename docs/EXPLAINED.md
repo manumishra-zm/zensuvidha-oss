@@ -895,6 +895,61 @@ here that cannot be written in an afternoon.
 
 ---
 
+## 5.7 What a full audit found
+
+Five defects, three of them introduced by the naturalness work in 5.6 — which is the
+argument for auditing after building rather than trusting the tests that shipped with it.
+
+**The adaptive noise floor never adapted.** `noiseFloor` was written in exactly one
+place, inside the *energy-fallback* branch of the VAD — but read by the self-echo bar and
+the drop-tiny-utterance check, both of which run whichever detector decided. So the
+moment you installed Silero, which the setup recommends, it froze at its initial `0.004`
+for the whole call and two "adaptive" thresholds became constants. In a loud room the
+guards that should have risen with the noise never moved. Now learned on both paths, from
+Silero's verdict, which is the better one.
+
+**The latch guard reported 0.0 s, always.** `uttMs` was zeroed before the line that read
+it, on the one path where the server never sees the clip and the inspector is the
+caller's only explanation. The same "capture before zeroing" mistake the file had already
+fixed twenty lines above.
+
+**A speculative reply outlived its call.** Cancelled on four paths but not in `finally`,
+so a client dropping mid-guess left an Ollama request running for a call that had ended —
+competing with live callers for the model. The comment directly above it warns about
+exactly this, for the idle watcher.
+
+**`EchoSuppressor.reset()` was never called.** Written with a docstring explaining it
+must run on barge-in "so a stale tail cannot explain away the words they interrupted us
+with", and nothing called it. Its own test passed. Now wired into `cancel_current()`.
+
+**The backchannel was invisible to the echo suppressor at the moment it played.**
+Recorded as ordinary output at greeting time, then murmured minutes later — by which
+point the 2 s rolling reference had long forgotten it. Measured: recognised right after
+preload, invisible ten seconds on. Audio the client holds and plays on its own schedule
+now goes to a separate reference that does not age out, and survives `reset()` because
+the client still has it.
+
+### And two changes the audit argued for
+
+**The endpoint window is sized to the question.** People do not pause the same way for
+every answer — reading a phone number aloud has long gaps between digit groups. One
+learned per-caller number either cut those in half or made every yes/no wait for them.
+The server already knew what it had asked; it now says so.
+
+**A latched turn is offered for isolation before being thrown away.** The guard exists
+because continuous sound is not a person — but a caller talking *over* continuous noise
+never gives a clean pause either, so they hit it too and were discarded and asked to
+repeat into the same noise. Isolation exists to pull one voice out of exactly that and
+never got the chance, because the turn died in the browser.
+
+It is offered, not forced: with no voiceprint the server cannot trim against anything, so
+it answers with the SNR-aware repair instead. And a salvaged turn may never *teach* the
+voiceprint — `may_learn=False` gates all four learning paths — because the thing that
+made it latch is exactly the thing that would poison the print. Measured before that
+guard: a latched clip scored the real caller **0.07** against their own voice.
+
+---
+
 ## 6. Why a call can never wedge
 
 The client enters "thinking" the instant it ships audio, and only leaves on a reply. So

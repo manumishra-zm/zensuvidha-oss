@@ -77,7 +77,8 @@ class EchoSuppressor:
     def __init__(self, sr: int = SR, enabled: bool = True):
         self.sr = sr
         self.enabled = enabled
-        self._ref = None            # numpy array, lazily created
+        self._ref = None            # rolling window of what we most recently played
+        self._recurring = []        # short clips the CLIENT may play at any moment
         self._played_s = 0.0
         self.suppressed = 0         # frames refused, for the inspector
         self.judged = 0
@@ -98,6 +99,38 @@ class EchoSuppressor:
             self._played_s += x.size / self.sr
         except Exception as e:  # noqa: BLE001
             log.debug("echo: could not record output (%s)", e)
+
+    def note_recurring(self, samples) -> None:
+        """Remember a short clip that may be played at ANY time, indefinitely.
+
+        The rolling reference holds the last couple of seconds, which is right for
+        speech we stream as we generate it. It is wrong for audio handed to the client
+        once and played later on its own schedule — the backchannel is pre-loaded at
+        greeting time and murmured minutes into the call, by which point the ring buffer
+        has long forgotten it. Measured: recognised right after preload, invisible ten
+        seconds later, which is exactly when it actually plays.
+        """
+        if not self.enabled:
+            return
+        try:
+            import numpy as np
+            x = np.asarray(samples, dtype="float32").reshape(-1)
+            # Bounded on purpose. These are murmurs and greetings, not sentences; a
+            # growing list would turn every frame into a linear scan of the whole call.
+            if x.size and len(self._recurring) < 4:
+                self._recurring.append(x[:int(2.0 * self.sr)])
+        except Exception as e:  # noqa: BLE001
+            log.debug("echo: could not record a recurring clip (%s)", e)
+
+    def note_recurring_wav(self, raw: bytes, decode) -> None:
+        if not self.enabled or not raw:
+            return
+        try:
+            data = decode(raw)
+            if data is not None:
+                self.note_recurring(data)
+        except Exception as e:  # noqa: BLE001
+            log.debug("echo: could not decode a recurring clip (%s)", e)
 
     def note_output_wav(self, raw: bytes, decode) -> None:
         """Same, from an encoded frame. `decode` is injected so this module stays free
@@ -121,7 +154,7 @@ class EchoSuppressor:
         tail once, and this file must never become the reason somebody cannot be heard.
         """
         self.judged += 1
-        if not self.enabled or self._ref is None:
+        if not self.enabled or (self._ref is None and not self._recurring):
             return False, 0.0
         try:
             import numpy as np
@@ -137,8 +170,11 @@ class EchoSuppressor:
             if float(np.sqrt(np.mean(x * x))) < MIN_RMS:
                 return False, 0.0                      # near-silence matches anything
 
-            ref = self._ref
-            if ref.size < self.sr // 50:
+            # Every reference we might be hearing: the rolling window, plus anything
+            # the client holds and can play on its own schedule.
+            refs = [r for r in ([self._ref] + self._recurring)
+                    if r is not None and r.size >= self.sr // 50]
+            if not refs:
                 return False, 0.0
 
             # Slide a WINDOW of the frame across the whole reference, rather than
@@ -148,7 +184,8 @@ class EchoSuppressor:
             # delayed. When the frame and the reference were the same length there was
             # simply no room left to slide and the lag search never ran at all.
             win = min(x.size, int(WINDOW_S * self.sr))
-            if ref.size < win:
+            usable = [r for r in refs if r.size >= win]
+            if not usable:
                 return False, 0.0
             # Probe the LOUDEST window of the frame, not the first one. A 300ms-delayed
             # echo starts with 300ms of near-silence, so probing the head correlated at
@@ -168,18 +205,24 @@ class EchoSuppressor:
             # Normalised cross-correlation at every offset, computed with sliding sums
             # instead of a Python loop: O(n log n) rather than O(n·w), which keeps this
             # off the critical path even on a long utterance.
-            cs = np.cumsum(np.concatenate([[0.0], ref.astype("float64")]))
-            cs2 = np.cumsum(np.concatenate([[0.0], (ref.astype("float64")) ** 2]))
-            sums = cs[win:] - cs[:-win]
-            sumsq = cs2[win:] - cs2[:-win]
-            means = sums / win
-            var = np.maximum(sumsq - win * means * means, 1e-12)
-            norms = np.sqrt(var)
-            # `p` is zero-mean, so sum(seg·p) already equals sum((seg-mean)·p) — the
-            # per-window mean cancels and does not need subtracting from the numerator.
-            num = np.correlate(ref.astype("float64"), p.astype("float64"), mode="valid")
-            ncc = np.abs(num) / (norms * pn + 1e-12)
-            best = float(ncc.max()) if ncc.size else 0.0
+            best = 0.0
+            for ref in usable:
+                r64 = ref.astype("float64")
+                cs = np.cumsum(np.concatenate([[0.0], r64]))
+                cs2 = np.cumsum(np.concatenate([[0.0], r64 ** 2]))
+                sums = cs[win:] - cs[:-win]
+                sumsq = cs2[win:] - cs2[:-win]
+                means = sums / win
+                var = np.maximum(sumsq - win * means * means, 1e-12)
+                norms = np.sqrt(var)
+                # `p` is zero-mean, so sum(seg·p) already equals sum((seg-mean)·p) —
+                # the per-window mean cancels out of the numerator.
+                num = np.correlate(r64, p.astype("float64"), mode="valid")
+                ncc = np.abs(num) / (norms * pn + 1e-12)
+                if ncc.size:
+                    best = max(best, float(ncc.max()))
+                if best >= 0.995:
+                    break
 
             if best >= ECHO_CORRELATION:
                 self.suppressed += 1
@@ -193,5 +236,9 @@ class EchoSuppressor:
 
     def reset(self) -> None:
         """Forget the reference. Called when the caller barges in and we stop playing,
-        so a stale tail cannot explain away the words they interrupted us with."""
+        so a stale tail cannot explain away the words they interrupted us with.
+
+        Recurring clips are KEPT: the client still holds them and can still play one,
+        so forgetting them here would reopen the hole this suppressor exists to close.
+        """
         self._ref = None

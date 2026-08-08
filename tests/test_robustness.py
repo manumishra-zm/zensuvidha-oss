@@ -658,9 +658,64 @@ def test_the_client_cuts_a_latched_vad():
     assert "LATCH_MS" in html and "LATCH_GAP_MS" in html
     assert "maxGapMs" in html, "the longest pause is not tracked"
     assert "askToRepeat" in html, "the caller is not told why their turn vanished"
-    # the cut must discard the audio rather than commit it
-    cut = html.split("maxGapMs<LATCH_GAP_MS")[1][:400]
-    assert "uttPCM=[]" in cut, "a latched buffer is still being sent to STT"
+
+    # Ordering, not a fixed-width window. Slicing N characters after an anchor is how
+    # several tests in this suite have broken on unrelated edits — the property is the
+    # SEQUENCE of what happens, so assert that.
+    at = html.index("maxGapMs<LATCH_GAP_MS")
+    closed = html.index("vad='silence'", at)
+    offered = html.index("mode:'latched'", at)
+    fallback = html.index("askToRepeat", at)
+
+    # The turn is always CLOSED locally — the state machine must not stay in 'speech'.
+    assert "uttPCM=[]" in html[at:closed + 200], "the latched turn never closed"
+    # …the audio is then OFFERED for salvage. A caller talking OVER continuous noise
+    # never gives a clean pause either, so they hit this guard too and used to be
+    # discarded and asked to repeat into the same noise. Isolation exists to pull one
+    # voice out of exactly that.
+    assert closed < offered < fallback, (
+        "the latched turn must close, then be offered for isolation, and only then "
+        "fall back to asking for a repeat")
+
+
+def test_a_salvaged_latched_turn_can_never_teach_the_voiceprint():
+    """The thing that made the turn latch — continuous sound with no breaths — is
+    exactly the thing that would poison the print. Answering it is worth attempting;
+    learning identity from it is not.
+
+    Measured before this guard existed: a latched clip scored the real caller 0.07
+    against their own voice.
+    """
+    import inspect
+    from zensuvidha.orchestrator import Session
+    from zensuvidha import server
+
+    src = inspect.getsource(Session.check_speaker)
+    # every path that mutates the print is gated
+    assert src.count("may_learn") >= 4, "a learning path is not gated on may_learn"
+    for path in ("self.voiceprint = vec", "_widen_voiceprint"):
+        assert path in src
+
+    # and the server passes False for a salvaged frame
+    ssrc = inspect.getsource(server)
+    assert "heard, not salvage)" in ssrc, "salvaged turns are still allowed to enrol"
+
+
+def test_a_salvage_with_no_voiceprint_is_refused_not_transcribed():
+    """With nothing to trim against, isolation cannot run — so passing it on would hand
+    Whisper the noise the guard exists for, and enrol it as the caller."""
+    import inspect
+    from zensuvidha import server
+    src = inspect.getsource(server)
+    at = src.index("salvage, spec[")
+    guard = src.index("session.voiceprint is None", at)
+    told = src.index("repair_kind()", guard)
+    skipped = src.index("continue", told)
+    reaches_pipeline = src.index("session.clean_audio", at)
+    assert guard < told < skipped < reaches_pipeline, (
+        "a salvage with no voiceprint must be answered and skipped BEFORE the pipeline "
+        "— otherwise Whisper gets the noise the latch guard exists for, and it is "
+        "enrolled as the caller")
 
 
 def test_the_repeat_prompt_is_rate_limited_client_side_too():

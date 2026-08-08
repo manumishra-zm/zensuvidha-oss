@@ -693,7 +693,10 @@ async def _preload_backchannel(sock, session):
             return
         audio = await run_in_threadpool(session.tts_bytes, phrase)
         if audio:
-            await _send_audio(sock, {"type": "backchannel", "text": phrase}, audio, session=session)
+            # RECURRING, not rolling: the client holds this and plays it whenever the
+            # caller pauses mid-sentence, which may be minutes from now.
+            session.note_recurring_audio(audio)
+            await _send_audio(sock, {"type": "backchannel", "text": phrase}, audio)
     except Exception as e:  # noqa: BLE001
         log.debug("backchannel preload skipped: %s", e)
 
@@ -1163,7 +1166,9 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
         # a reply generated against a guess, plus the guess it answers. Adopted only
         # if the committed transcript is IDENTICAL — a reply to a sentence the caller
         # had not finished is worse than waiting for the one they did.
-        "gen": None, "gen_for": None}
+        "gen": None, "gen_for": None,
+        # the next frame is a latched salvage — see the stt_hint handler
+        "latched": False}
 
     async def cancel_current():
         t = task["cur"]
@@ -1174,6 +1179,14 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
             except asyncio.CancelledError:
                 pass
         task["cur"] = None
+        # We have stopped talking. Whatever we were half-way through saying is still in
+        # the echo reference, and the caller's interrupting words OVERLAP it — so a
+        # stale tail could explain away the very turn that interrupted us. `reset()`
+        # was written for exactly this and nothing was calling it.
+        try:
+            session.echo.reset()
+        except Exception:  # noqa: BLE001
+            pass
 
     async def launch(text, heard, precomputed=None):
         await cancel_current()   # barge-in: abandon any in-flight reply
@@ -1311,6 +1324,17 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                         # anything else: they resumed, so the guess is void.
                         if SPECULATIVE_STT and data.get("mode") == "spec":
                             spec["armed"] = True
+                        elif data.get("mode") == "latched":
+                            # The client hit its latch guard — 7s with no pause — and is
+                            # offering the audio instead of discarding it. A caller
+                            # talking OVER continuous noise never gives a clean pause
+                            # either, so they land here too and used to be thrown away
+                            # and asked to repeat, into the same noise. Isolation exists
+                            # to pull one voice out of exactly that.
+                            spec["armed"] = False
+                            spec["text"] = None
+                            spec["latched"] = True
+                            _void_speculation(spec)
                         else:
                             spec["armed"] = False
                             spec["text"] = None
@@ -1461,6 +1485,20 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                     # Split the turn by speaker and keep only the caller's parts BEFORE
                     # transcription, so a colleague talking in a gap never reaches Whisper.
                     # Returns the original bytes whenever anything is uncertain.
+                    salvage, spec["latched"] = spec.get("latched", False), False
+                    if salvage and session.voiceprint is None:
+                        # Nothing to trim against. Isolation cannot run, so passing it on
+                        # would just hand Whisper the noise the guard exists for — and
+                        # worse, ENROL it as the caller.
+                        log.info("latched turn: no voiceprint yet, cannot isolate — "
+                                 "asking the caller to repeat")
+                        line = session.safe_say(session.repair_kind())
+                        out = await run_in_threadpool(session.tts_bytes, line)
+                        await _send_audio(sock, {"type": "reply", "text": line,
+                                                 "heard": "", "action": {"type": "none"},
+                                                 "timings": {}}, out, session=session)
+                        continue
+
                     # Is this us? Judged on RAW audio, before isolation or denoising —
                     # a denoiser reshapes the echo enough to break the correlation, and
                     # isolation would happily trim our own voice into something
@@ -1520,7 +1558,8 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                     # audio only; a guess never mutates session state.
                     if heard and not speculative:
                         same, sim = await run_in_threadpool(
-                            session.check_speaker, audio, (dia or {}).get("speakers"), heard)
+                            session.check_speaker, audio, (dia or {}).get("speakers"),
+                            heard, not salvage)
                         if not same:
                             log.info("mic turn ignored: different speaker (sim=%.2f) %r",
                                      sim if sim is not None else -1,
@@ -1562,7 +1601,13 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                         if heard:
                             await sock.send_json({"type": "partial", "text": heard,
                                                   "complete": not spec["incomplete"],
-                                                  "settled": spec["settled"]})
+                                                  "settled": spec["settled"],
+                                                  # what we ASKED for. People pause
+                                                  # differently mid-phone-number than
+                                                  # mid-sentence, and the window has
+                                                  # been one number for everyone.
+                                                  "expect": (session.pending_slot
+                                                             or session.last_asked_slot)})
                         # Start answering it NOW, while they may still be pausing. Only
                         # when the words look FINISHED: replying to half a sentence is
                         # worse than waiting for the whole one, and a half-spoken phone
@@ -1644,6 +1689,10 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
         # per call, each holding a Session and firing TTS into a closed connection.
         if idle_task:
             idle_task.cancel()
+        # …and so does a speculative reply. Same failure class as the line above: a
+        # client that drops mid-guess left an Ollama request running for a call that had
+        # ended, competing with live callers for the model.
+        _void_speculation(spec)
         await cancel_current()
         _sessions["n"] = max(0, _sessions["n"] - 1)
         # keep the session alive briefly so a reconnect resumes it (no mid-call amnesia)

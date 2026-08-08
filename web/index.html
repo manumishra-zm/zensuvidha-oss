@@ -630,9 +630,15 @@ let specWords=false, specUttMs=0, pendingPCM=null, commitTimer=null;
 // ("मेरा मोबाइल नंबर" — the number is still coming). Silence alone cannot know that.
 let holdForMore=false;
 let settled = false;         // server says the words admit no continuation
+let expectSlot = null;       // the slot the server last asked for
 let bcBuffer = null, bcUsedThisTurn = false;   // the preloaded listening noise
 const HOLD_EXTRA_MS = 900;
 const SETTLED_MS = 400;      // the transcript is unambiguously finished — close now
+// People do not pause the same way for every question. Reading a phone number out loud
+// has long gaps between digit groups — "eight nine two… oh four two…" — and the single
+// learned per-caller window either cut those in half or made every yes/no wait for
+// them. The server already knows what it asked; this sizes the window to the answer.
+const EXPECT_EXTRA_MS = {phone: 600, datetime: 300, name: 150};
 // A listening noise while the CALLER is still talking. Not a filler — a filler covers
 // our silence while we think; this is the "mm-hm" that says we are still here. Held
 // client-side and played locally, because it has to land in the pause itself.
@@ -654,8 +660,11 @@ function endpointMs(){
   // contributor to the call feeling slow, and it costs nothing when the signal is off.
   // `holdForMore` always wins: "unfinished" is the conservative answer of the two.
   if(settled && !holdForMore) return SETTLED_MS;
-  return Math.min(ENDPOINT_MAX_MS + (holdForMore ? HOLD_EXTRA_MS : 0),
-                  base + (holdForMore ? HOLD_EXTRA_MS : 0));
+  // …but a number that has NOT reached full length still deserves the gaps people
+  // leave between digit groups. `settled` above already closes a complete one fast,
+  // so this only lengthens the case that is genuinely still in progress.
+  const extra = (EXPECT_EXTRA_MS[expectSlot] || 0) + (holdForMore ? HOLD_EXTRA_MS : 0);
+  return Math.min(ENDPOINT_MAX_MS + extra, base + extra);
 }
 function notePause(ms){          // they carried on talking after a pause this long
   if(ms > speakerPauseMs){
@@ -917,8 +926,14 @@ async function handleFrame(f, backlogged){
     // opened one constantly, and Whisper then hallucinated on the noise.
     const gate=Math.max(noiseFloor*4.0, 0.006)*(agentPlaying?3:1);
     speaking = f.rms > gate;
-    if(!speaking) noiseFloor = noiseFloor*0.97 + f.rms*0.03;
   }
+  // Learn the room on BOTH paths. This used to live inside the else-branch, so once
+  // Silero was installed — which the setup recommends — noiseFloor stayed frozen at its
+  // initial 0.004 for the whole call. It is still READ by the self-echo bar and the
+  // drop-tiny-utterance check, both of which run whichever VAD decided, so two
+  // "adaptive" thresholds were silently constants for everyone who followed the setup.
+  // Silero's verdict is the better one to learn from, not the worse.
+  if(!speaking) noiseFloor = noiseFloor*0.97 + f.rms*0.03;
 
   // While the agent is talking, IGNORE brief noise — only barge in on SUSTAINED speech.
   if(agentPlaying){
@@ -984,12 +999,36 @@ async function handleFrame(f, backlogged){
         // Continuous sound, no breaths. Throw it away and say so: sending it on
         // produces an empty transcript and a wrecked voiceprint.
         console.log('[vad] '+(uttMs|0)+'ms with no pause — continuous background audio');
+        const latchedMs = uttMs;      // read BEFORE the reset below, or the inspector
+                                      // reports 0.0s on the ONE path where it is the
+                                      // caller's only explanation of what happened
+        const latched = uttPCM.slice();          // …and keep the audio, to salvage below
         vad='silence'; uttPCM=[]; uttMs=0; silenceMs=0; speechMs=0; maxGapMs=0;
         dropSpeculation(); specTries=0; specAt=0; specUttMs=0;
+        // SALVAGE FIRST, if there is anything to salvage with.
+        //
+        // A caller talking OVER continuous noise also never gives a clean pause, so
+        // they hit this guard too — and were thrown away and asked to repeat, into the
+        // same noise. Isolation exists to pull one voice out of exactly that, and it
+        // never got the chance because the turn died here.
+        //
+        // The SERVER decides whether it can help: isolation needs a voiceprint to trim
+        // against, and only the server knows whether it has one. Inferring that here
+        // from inspector rows would couple a control decision to a debug panel.
+        if(latched && ws && ws.readyState===1){
+          console.log('[vad] latched — sending it for isolation instead of discarding');
+          try{
+            const {blob} = wavOf(latched);
+            ws.send(JSON.stringify({type:'stt_hint', mode:'latched'}));
+            ws.send(blob);
+            setState('thinking');
+            return;                      // the server answers, or drops it with a reason
+          }catch(_){ /* fall through to the local discard */ }
+        }
         // The inspector's whole job is explaining what happened to the audio. This
         // is the one path where the SERVER never sees the clip, so nothing would
         // appear there unless the client says so itself.
-        addInsight({accepted:false, speakers:null, total_s:uttMs/1000, kept_s:0,
+        addInsight({accepted:false, speakers:null, total_s:latchedMs/1000, kept_s:0,
                     heard:'', local:'continuous background audio — never paused, so it '
                                  +'was never a turn'});
         askToRepeat("There's continuous audio in the background — I couldn't pick out "
@@ -1729,6 +1768,7 @@ function connect(pack, isReconnect){
           // Set AND clear, for the same reason holdForMore does: a latched hint would
           // apply one turn's shape to every turn after it.
           settled = (m.settled===true);
+          expectSlot = m.expect || null;   // assigned, never latched
           if(settled && !wasHeld) console.log('[vad] transcript is finished → closing in '+SETTLED_MS+'ms');
           if(holdForMore && !wasHeld)
             console.log('[vad] transcript sounds unfinished → waiting '+(endpointMs()|0)+'ms');

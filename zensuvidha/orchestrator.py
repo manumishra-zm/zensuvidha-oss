@@ -1707,6 +1707,16 @@ class Session:
     def isolate_caller(self, audio):
         return self.clean_audio(audio)
 
+    def note_recurring_audio(self, raw: bytes) -> None:
+        """Audio handed to the client once and played later on its own schedule.
+
+        The backchannel is pre-loaded at greeting time and murmured minutes into the
+        call. Recorded as ordinary output it would have aged out of the rolling
+        reference long before it was ever heard.
+        """
+        if self.echo.enabled and raw and self.stt is not None:
+            self.echo.note_recurring_wav(raw, self.stt._decode)
+
     def note_played(self, raw: bytes) -> None:
         """Remember audio we are sending, so it can be recognised coming back."""
         if self.echo.enabled and raw and self.stt is not None:
@@ -1729,7 +1739,7 @@ class Session:
             return False, 0.0
         return self.echo.is_echo(data)
 
-    def check_speaker(self, audio, speakers=None, heard=None):
+    def check_speaker(self, audio, speakers=None, heard=None, may_learn=True):
         """Is this the person whose call this is?
 
         `speakers` is how many voices diarization COUNTED in this clip, or None when
@@ -1742,6 +1752,12 @@ class Session:
         The FIRST utterance long enough to take a voiceprint from defines the caller —
         on a phone line that is by definition the person who rang. Everything after is
         compared against it, so a bystander or a television never becomes a turn.
+
+        `may_learn` is False for a SALVAGED turn — one the client's latch guard caught
+        as 7s of unbroken sound and offered anyway, so isolation could try to pull the
+        caller out of it. Answering such a turn is worth attempting; LEARNING the
+        caller's identity from it is not, because the thing that made it latch is
+        exactly the thing that would poison the print.
 
         `heard` is the transcript, when there is one. It is consulted ONLY on the
         refusal path, as a second opinion the voiceprint cannot give: a turn that
@@ -1761,6 +1777,8 @@ class Session:
             return True, None
         from .speaker import MIN_ENROL_S
         if self.voiceprint is None:
+            if not may_learn:
+                return True, None         # answer it, but never enrol from a salvage
             vec = self.speaker_gate.embed(audio, min_seconds=MIN_ENROL_S)
             if vec is not None:
                 self.voiceprint = vec
@@ -1846,7 +1864,7 @@ class Session:
                 # isolation off, the caller's own near misses could never corroborate the
                 # print, so the provisional window expired with a print still too thin to
                 # recognise them and they were refused at 0.49 on their own call.
-                if (speakers or 1) <= 1:
+                if may_learn and (speakers or 1) <= 1:
                     before = self._voiceprint_n
                     self._widen_voiceprint(audio)
                     if self._voiceprint_n > before:
@@ -1887,7 +1905,7 @@ class Session:
                 self._gate_rejects += 1
                 need = (self.REENROL_AFTER if self._voiceprint_n >= self.VOICEPRINT_TRUST_N
                         else self.REENROL_PROVISIONAL)
-                if self._gate_rejects >= need and (speakers or 1) <= 1:
+                if may_learn and self._gate_rejects >= need and (speakers or 1) <= 1:
                     # ...and never from a clip KNOWN to hold more than one voice. Widening
                     # refuses those and so does rival adoption, for the same reason: a
                     # blend of two people must not become the caller's identity. The
@@ -1900,7 +1918,7 @@ class Session:
                     self.voiceprint, self._voiceprint_n = None, 0
                     self._gate_rejects, self._reject_vec = 0, None
                     self._gate_turns = 0
-                    return self.check_speaker(audio, speakers, heard)  # enrol on this utterance
+                    return self.check_speaker(audio, speakers, heard, may_learn)  # enrol here
             else:
                 self._gate_rejects = 0
             # LAST CHANCE, and the only one this signal gets: does the TURN look like
@@ -1941,7 +1959,7 @@ class Session:
         # cover how they really sound on THIS line.
         # Only well-clear matches contribute, and only a handful, so a borderline
         # impostor who slips through once cannot drag the print toward themselves.
-        if (sim is not None and speakers != 0
+        if (may_learn and sim is not None and speakers != 0
                 and sim >= self.speaker_gate.threshold + self.VOICEPRINT_MARGIN):
             self._widen_voiceprint(audio)
         return ok, sim
