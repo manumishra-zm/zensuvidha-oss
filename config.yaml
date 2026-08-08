@@ -184,7 +184,13 @@ server:
   backchannel: true          # a quiet "mm-hm" at a pause on a long turn, so the agent
                              #   is not silent and then abruptly speaking. Once per
                              #   turn, ducked, never over a word.
-  speculative_reply: true     # answer the guess while the caller may still be pausing;
+  speculative_reply: false   # MEASURED OFF. On one local Ollama the real turn goes
+                             #   2339ms -> 6044ms, because requests are serialised per
+                             #   model and the real generation queues BEHIND the guess.
+                             #   Only enable where the server can truly run concurrent
+                             #   requests (a GPU with spare capacity, OLLAMA_NUM_PARALLEL
+                             #   >1 on hardware that can absorb it).
+                             # answer the guess while the caller may still be pausing;
                              #   adopted ONLY if the committed transcript is identical.
                              #   Saves the gap between 450ms speculation and the 800-
                              #   1200ms endpoint. Read-only on the session.

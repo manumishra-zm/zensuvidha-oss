@@ -376,7 +376,21 @@ async def _dropped(sock, why: str):
         pass
 
 
-SPECULATIVE_REPLY = bool(cfg.get("server", {}).get("speculative_reply", True))
+# OFF by default. MEASURED on one local Ollama, which is what this project targets:
+#
+#   a turn alone                    2339 ms
+#   the same turn, spec in flight   6044 ms      +3704 ms
+#
+# Ollama serialises requests per model, so the real generation QUEUES BEHIND the guess
+# instead of overlapping it — the turn gets 2.6x slower, which is the exact opposite of
+# what this was built for. The same shape as a bug already in this codebase's history:
+# a degeneracy retry fired from inside an open stream and was queued behind the
+# generation it had already abandoned.
+#
+# It only pays where the model server can genuinely run concurrent requests — a GPU with
+# spare capacity, or OLLAMA_NUM_PARALLEL > 1 on hardware that can absorb it. On a laptop
+# it is a straight loss.
+SPECULATIVE_REPLY = bool(cfg.get("server", {}).get("speculative_reply", False))
 
 
 def _void_speculation(spec: dict) -> None:
@@ -743,7 +757,20 @@ async def _stream_turn(sock, session, user_text, heard, precomputed=None):
         quick, why = await run_in_threadpool(session.quick_answer, user_text)
         if quick:
             log.info("fast path: answered from the pack, no model call (%s)", why)
-            await _speak_chunk(sock, session, quick, 1)
+            # Speak it SENTENCE BY SENTENCE, the same way a generated reply is spoken.
+            # The first version handed the whole answer to TTS in one call and waited
+            # 1724ms before the caller heard anything — the pack's answers carry real
+            # detail ("open Monday to Saturday, 9am to 8pm, with a lunch break…") and
+            # Kokoro scales with the text. Skipping the model is worthless if the saving
+            # is spent waiting for one long synthesis. The first chunk breaks on clauses
+            # too, which is what makes the opening arrive fast.
+            pos, seq = 0, 0
+            while pos < len(quick):
+                chunk, pos = next_chunk(quick, pos, clause=(seq == 0), final=True)
+                if not chunk:
+                    break
+                seq += 1
+                await _speak_chunk(sock, session, chunk, seq)
             session.finalize(json.dumps({"kind": "answer", "say": quick,
                                          "action": {"type": "none"}},
                                         ensure_ascii=False))

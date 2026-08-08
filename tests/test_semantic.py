@@ -232,3 +232,19 @@ def test_a_missing_neural_model_falls_back_rather_than_failing_the_call():
     idx = S.KnowledgeIndex(load_pack("clinic"), "this/model-does-not-exist")
     assert isinstance(idx.backend, S.LexicalBackend)
     assert idx.search("what are your timings", k=1), "fallback ranking is broken"
+
+
+def test_the_fast_path_streams_rather_than_synthesising_one_long_call():
+    """Skipping the model is worthless if the saving is spent waiting for one long TTS.
+    The pack's answers carry real detail — "open Monday to Saturday, 9am to 8pm, with a
+    lunch break…" — and Kokoro scales with the text: 2955ms for the whole answer against
+    2003ms to the first chunk, so 951ms of the saving was being handed straight back."""
+    import inspect
+    from zensuvidha import server
+    src = inspect.getsource(server._stream_turn)
+    at = src.index("fast path: answered from the pack")
+    window = src[at:at + 900]
+    assert "next_chunk(" in window, "the fast path speaks the whole answer in one call"
+    assert "clause=(seq == 0)" in window, (
+        "the first chunk must break on clauses too — that is what makes the opening "
+        "arrive fast")
