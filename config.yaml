@@ -169,6 +169,21 @@ llm:
 
 tts:
   provider: kokoro           # system (pyttsx3) | piper | kokoro | indic_parler | clone | none
+  # ---- cloning runs OUT OF PROCESS, and it has to ---------------------------------
+  # `provider: clone` currently returns None on this install: coqui-tts needs a newer
+  # `transformers` than the 4.46.1 pinned here, and that pin exists because parler-tts —
+  # the Indic voice — requires exactly 4.46.1. The environment can host the Indic voice
+  # or the in-process cloner, and it chose the voice. So the brand-voice feature has
+  # been quietly unavailable.
+  # Third collision of this shape (deepfilternet forced numpy<2 and broke SpeechBrain;
+  # Qwen3-Embedding's transformers bump broke parler), and the project answered it the
+  # same way twice: do not import it. DeepFilterNet is a binary we shell out to,
+  # whisper.cpp is a server we talk to. Cloning is seconds per sentence and runs offline,
+  # so a subprocess costs nothing that matters.
+  #   python3 -m venv ~/.cache/zensuvidha-clone
+  #   ~/.cache/zensuvidha-clone/bin/pip install voxcpm      # Apache-2.0, weights too
+  clone_command: null        # e.g. ["~/.cache/zensuvidha-clone/bin/python", "scripts/clone_worker.py"]
+  clone_timeout: 120         # a wedged worker must never hold a threadpool worker
   # WHY kokoro and not system: macOS `say` is ~1064ms of FIXED per-call overhead plus
   # 0.4ms/char — a three-word opener costs as much as a paragraph, and time-to-first-
   # audio is dominated by it. Measured on the same machine, same sentences:
@@ -190,6 +205,18 @@ tts:
   #   Language is auto-detected from the text; voice/style is set by the description below.
   #   First run downloads ~2GB from Hugging Face. Needs: pip install -r requirements-voice.txt
   device: null               # null = cuda→cpu auto. Set "mps" to try Apple GPU (may be flaky).
+  # ---- brand voice: say the fixed lines once, in the owner's voice -----------------
+  # Cloning is seconds per sentence on a CPU (XTTS says so in its own docstring; VoxCPM2
+  # is a 2B model at RTF ~0.3 on a 4090), so it can never sit on a turn beside Kokoro's
+  # measured 385ms. But it does not have to: 318 of the sentences this agent can say are
+  # FIXED TEXT — the greeting, 60 slot questions, 108 safe lines across twelve languages,
+  # and the knowledge answers the semantic fast path quotes verbatim. Rendered once when
+  # the owner records their voice and PINNED in the cache, they cost nothing per call.
+  # Runs in the background after /voice/clone; a line not ready yet simply misses and is
+  # spoken by the live synthesiser, exactly as before.
+  prerender_clone: true
+  prerender_budget_s: 900    # stop after this and keep whatever is done — a partial
+                             #   render is a partial improvement, not a broken state
   indic_description: "A female speaker with a clear, warm, natural voice speaks at a moderate pace with expressive intonation. The recording is very high quality with no background noise."
 
 # Grounding guard — checks the model instead of trusting it (see zensuvidha/guard.py).

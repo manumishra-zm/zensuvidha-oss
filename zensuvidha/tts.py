@@ -126,7 +126,12 @@ def get_tts(cfg: dict):
             inner = IndicParlerTTS(cfg)
             serialise = True   # heavy neural model — serialise inference
         elif provider == "clone":
-            inner = CloneTTS(cfg)
+            # Out of process when a worker is configured, which is the only way this
+            # works on the shipping install — the in-process cloner cannot import at
+            # all here (coqui-tts needs a newer transformers than parler-tts allows).
+            # The in-process path stays for environments where it does load.
+            inner = SubprocessCloneTTS(cfg) if (cfg or {}).get("clone_command") \
+                else CloneTTS(cfg)
             serialise = True   # heavy model — serialise inference
         else:
             import sys
@@ -152,13 +157,24 @@ class CachedTTS:
         self.inner = inner
         self.maxsize = maxsize
         self._cache: "OrderedDict[str, bytes]" = OrderedDict()
+        # Pre-rendered lines live SEPARATELY and are never evicted. Without this the
+        # feature defeats itself: the clinic pack has 318 fixed lines against a default
+        # maxsize of 256, so a fifth of the owner's cloned voice would be thrown away
+        # the moment it was made, and ordinary traffic would grind away the rest.
+        # They are a fixed, known set — bounded by the pack, not by the call — so an
+        # LRU is the wrong structure for them.
+        self._pinned: dict[str, bytes] = {}
         self._cache_lock = threading.Lock()
         self._synth_lock = threading.Lock() if serialise else None
         self.last_skipped_script = False
 
-    def synth(self, text: str, voice: str | None = None):
+    def synth(self, text: str, voice: str | None = None, pin: bool = False):
         key = hashlib.sha1(f"{voice}|{text}".encode("utf-8")).hexdigest()
         with self._cache_lock:
+            hit = self._pinned.get(key)
+            if hit is not None:
+                self.last_skipped_script = False
+                return hit
             if key in self._cache:
                 self._cache.move_to_end(key)
                 # A cached entry is audio that WAS produced, so nothing was skipped.
@@ -173,10 +189,20 @@ class CachedTTS:
             # it mute_reason was ALWAYS None, so a caller whose language the voice cannot
             # pronounce got silence with no explanation anywhere in the UI.
             self.last_skipped_script = getattr(self.inner, "last_skipped_script", False)
+            # Never cache a NON-result. A provider that declined the script returns None
+            # with the flag set; filing that meant the next request for the same line
+            # was served from the cache — which clears the flag on a hit — so the UI
+            # stopped being able to explain why the caller heard nothing. Re-asking a
+            # provider that will decline again is cheap; being unable to say why is not.
+            if not audio:
+                return audio
             with self._cache_lock:
-                self._cache[key] = audio
-                if len(self._cache) > self.maxsize:
-                    self._cache.popitem(last=False)
+                if pin and not self.last_skipped_script:
+                    self._pinned[key] = audio
+                else:
+                    self._cache[key] = audio
+                    if len(self._cache) > self.maxsize:
+                        self._cache.popitem(last=False)
             return audio
 
         if self._synth_lock:
@@ -186,6 +212,22 @@ class CachedTTS:
                         return self._cache[key]
                 return _do()
         return _do()
+
+    def unpin(self, text: str, voice: str | None = None) -> bool:
+        """Drop a pinned line. Used when a pre-rendered clip fails verification —
+        the render has already happened by then, and leaving a bad one pinned is worse
+        than never having rendered it."""
+        key = hashlib.sha1(f"{voice}|{text}".encode("utf-8")).hexdigest()
+        with self._cache_lock:
+            return self._pinned.pop(key, None) is not None
+
+    def pinned_bytes(self) -> int:
+        """How much memory the pre-rendered set is holding. Reported rather than
+        capped: it is a fixed set decided by the pack, and silently dropping half of it
+        would put the owner's voice on some lines and not others for no visible reason.
+        """
+        with self._cache_lock:
+            return sum(len(v) for v in self._pinned.values())
 
     def synth_stream(self, text: str, voice: str | None = None):
         """Incremental synthesis, cache-aware.
@@ -705,3 +747,104 @@ class IndicParlerTTS:
         buf = io.BytesIO()
         sf.write(buf, arr, self._sr, format="WAV", subtype="PCM_16")
         return buf.getvalue()
+
+
+class SubprocessCloneTTS:
+    """Voice cloning in a SEPARATE process, with its own dependencies.
+
+    WHY THIS EXISTS, and it is not a style preference.
+
+    The in-process cloner does not work. `get_tts({"provider": "clone"})` returns None
+    on this install, because coqui-tts needs a newer `transformers` than the 4.46.1 this
+    venv is pinned to — and that pin is deliberate: parler-tts, the Indic voice, requires
+    exactly 4.46.1. So the environment can host the Indic voice or the cloner, and it
+    chose the voice, correctly. The brand-voice feature has been silently unavailable
+    ever since.
+
+    That is the third time a pip install has broken this venv (deepfilternet forced
+    numpy<2 and broke SpeechBrain; Qwen3-Embedding's transformers bump broke parler),
+    and the codebase already has the answer both other times: DO NOT IMPORT IT. The
+    DeepFilterNet path shells out to a Rust binary; whisper.cpp shells out to
+    `whisper-server`. A subprocess cannot break this venv, and its dependency conflicts
+    are its own business.
+
+    Cloning is the ideal candidate for it. It is measured in SECONDS per sentence
+    (VoxCPM-0.5B: RTF 2.89 English on this M1; XTTS documents "a few seconds/sentence on
+    CPU"), so it can never be on a turn's critical path anyway — it runs offline, in
+    `prerender`, filling a cache. Against a 5-second synthesis, process spawn is noise.
+
+    The worker contract is deliberately tiny, so any cloner can satisfy it:
+
+        <python> <script> --ref <reference.wav> --text <text> --out <out.wav>
+
+    exit 0 and a readable wav at --out means success. Anything else is a decline, and
+    the caller falls back exactly as it does for any provider that cannot speak.
+    """
+
+    def __init__(self, cfg: dict):
+        import os
+        import shutil
+        cfg = cfg or {}
+        self.reference = cfg.get("reference")
+        cmd = cfg.get("clone_command")
+        if not cmd:
+            raise RuntimeError(
+                "tts.clone_command is not set. Point it at a worker in its own venv, "
+                "e.g. ['/path/to/vox-venv/bin/python', 'scripts/clone_worker.py'] — "
+                "see scripts/clone_worker.py for the contract.")
+        self.cmd = list(cmd) if isinstance(cmd, (list, tuple)) else str(cmd).split()
+        exe = self.cmd[0]
+        if not (os.path.isfile(exe) or shutil.which(exe)):
+            raise RuntimeError("clone worker not found: %s" % exe)
+        if not self.reference or not os.path.isfile(self.reference):
+            raise RuntimeError("clone reference wav missing: %s" % self.reference)
+        self.timeout = float(cfg.get("clone_timeout", 120))
+        self.language = cfg.get("clone_language", "en")
+        self.last_skipped_script = False
+        # One at a time. The worker loads a multi-gigabyte model; two of them at once on
+        # a laptop is how you get an OOM instead of a voice.
+        self._lock = threading.Lock()
+        log.info("TTS: subprocess cloner (%s)", os.path.basename(exe))
+
+    def synth(self, text: str, voice: str | None = None):
+        import os
+        import subprocess
+        import tempfile
+        self.last_skipped_script = False
+        if not (text or "").strip():
+            return None
+        tmp = tempfile.mkdtemp(prefix="zs_clone_")
+        out = os.path.join(tmp, "o.wav")
+        try:
+            cmd = self.cmd + ["--ref", self.reference, "--text", text, "--out", out,
+                              "--language", self.language]
+            with self._lock:
+                r = subprocess.run(cmd, capture_output=True, timeout=self.timeout)
+            if r.returncode != 0:
+                log.warning("clone worker failed (%s): %s", r.returncode,
+                            (r.stderr or b"")[-200:])
+                return None
+            if not os.path.isfile(out) or os.path.getsize(out) < 64:
+                return None
+            data = open(out, "rb").read()
+            # A worker that printed an error into --out must not be forwarded AS audio:
+            # the client then fails to decode it and the turn is silent with nothing
+            # recorded anywhere. `orchestrator._playable` already guards every clone
+            # result, so this is the cheap structural half — importing that function
+            # here would be a circular import, and copying it would be a second copy
+            # to drift.
+            if data[:4] not in (b"RIFF", b"FORM") and data[:3] != b"ID3":
+                log.warning("clone worker wrote something that is not audio")
+                return None
+            return data
+        except subprocess.TimeoutExpired:
+            # A cloner that wedges must not hold a threadpool worker forever — the same
+            # rule the `say` and whisper.cpp timeouts exist for.
+            log.warning("clone worker timed out after %.0fs", self.timeout)
+            return None
+        except Exception as e:  # noqa: BLE001
+            log.warning("clone worker error: %s", e)
+            return None
+        finally:
+            import shutil as _sh
+            _sh.rmtree(tmp, ignore_errors=True)
