@@ -40,7 +40,36 @@ scenarios:
   - {name: "Caller is unsure", do: "Briefly explain the options from the services list and help them choose."}
 
 escalation:
-  keywords: ["human", "agent", "manager", "complaint", "refund", "emergency"]
+  # Two lists, because they need two different people and two different sentences.
+  # A caller who is angry, wants money back, or is asking for whoever is in charge is
+  # not helped by "let me connect you to a team member" — that is what makes them ask
+  # again, louder. Checked FIRST, so "your manager, about this emergency" reaches the
+  # manager. A pack that names its own manager overrides `manager` and `manager_message`.
+  manager_keywords: ["manager", "supervisor", "in charge", "incharge", "owner",
+    "complaint", "complain", "refund", "money back", "overcharg", "wrong bill",
+    "billing issue", "rude", "misbehav", "legal", "consumer court",
+    "मैनेजर", "प्रबंधक", "शिकायत", "रिफंड", "पैसे वापस",
+    "మేనేజర్", "ఫిర్యాదు", "రీఫండ్"]
+  # Spoken after a booking is confirmed, so the call does not simply stop. A caller who
+  # has just booked very often has a second question — directions, fees, what to bring —
+  # and a receptionist who goes silent invites them to hang up instead of asking it.
+  # Per language, because a Hindi caller getting an English sign-off reads as the agent
+  # switching person mid-call. A pack may override it.
+  after_booking:
+    en: "Is there anything else I can help you with?"
+    hi: "क्या मैं आपकी और किसी बात में मदद कर सकती हूँ?"
+    te: "నేను మీకు ఇంకా ఏమైనా సహాయం చేయగలనా?"
+    ta: "வேறு ஏதாவது உதவி வேண்டுமா?"
+    mr: "मी तुमची आणखी काही मदत करू शकते का?"
+    bn: "আমি কি আপনাকে আর কিছু সাহায্য করতে পারি?"
+    kn: "ನಾನು ನಿಮಗೆ ಇನ್ನೇನಾದರೂ ಸಹಾಯ ಮಾಡಬಹುದೇ?"
+    ml: "മറ്റെന്തെങ്കിലും സഹായം വേണോ?"
+    gu: "શું હું તમને બીજી કોઈ મદદ કરી શકું?"
+    pa: "ਕੀ ਮੈਂ ਤੁਹਾਡੀ ਹੋਰ ਕੋਈ ਮਦਦ ਕਰ ਸਕਦੀ ਹਾਂ?"
+    ur: "کیا میں آپ کی کوئی اور مدد کر سکتی ہوں؟"
+    or: "ମୁଁ ଆପଣଙ୍କୁ ଆଉ କିଛି ସାହାଯ୍ୟ କରିପାରିବି କି?"
+  manager_message: "I'm sorry this has come up — let me put you through to the manager right away. Please hold."
+  keywords: ["human", "agent", "emergency"]
   conditions:
     - "the caller is angry or repeatedly frustrated"
   message: "I understand — let me connect you to a team member right away. Please hold."

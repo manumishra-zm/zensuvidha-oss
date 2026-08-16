@@ -494,7 +494,20 @@ def test_the_rescue_runs_after_stt_so_it_cannot_affect_what_whisper_saw():
     from zensuvidha import server
     src = inspect.getsource(server)
     prepare_at = src.index("session.clean_audio")     # isolation + denoise
-    gate_at = src.index("session.check_speaker")      # …then, and only then, identity
-    assert prepare_at < gate_at, (
+
+    # There are TWO gate call sites now — the mic frame, and the commit that adopts a
+    # speculative transcript without the recording being resent. A single "first index"
+    # check silently stopped covering the one that matters as soon as the second
+    # appeared, so both are named here.
+    frame_gate = src.index("session.check_speaker, audio")
+    assert prepare_at < frame_gate, (
         "the speaker gate must run AFTER the audio pipeline, or a text judgement "
         "could reach back into filtering")
+
+    # The commit-time gate never sees a raw recording: it judges what was stashed, and
+    # what is stashed is the pipeline's OUTPUT. If that assignment ever moved above
+    # clean_audio, the gate would be judging audio Whisper never saw.
+    stash = src.index('spec["audio"] = audio')
+    assert prepare_at < stash, "the stashed audio must come from the pipeline, not the wire"
+    assert 'session.check_speaker, gate_audio' in src, (
+        "the commit path must gate the audio it stashed, not re-derive it")

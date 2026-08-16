@@ -18,7 +18,8 @@ from .booking import create_booking
 from . import expectation
 from .guard import (GuardConfig, LANG_SCRIPT, TOKEN_FACTOR, ask_line, check_reply,
                     is_degenerate, looks_hinglish, looks_like_echo, norm_digits, numbers_in,
-                    pack_numbers, safe_line)
+                    availability_for, availability_numbers, off_domain, pack_numbers,
+                    safe_line, slot_is_free)
 
 log = logging.getLogger("zensuvidha.orchestrator")
 
@@ -328,6 +329,17 @@ def build_system_prompt(pack: dict) -> str:
                    "type \"book_appointment\" ONLY, when ALL required fields are filled; until then use "
                    "\"collect\" and ask for the next missing one. Read the phone number back to confirm.")
 
+    days = (pack.get("availability", {}) or {}).get("days", {}) or {}
+    if days:
+        lines = []
+        for day, doctors in days.items():
+            for doc, times in (doctors or {}).items():
+                lines.append("  %s — %s: %s" % (day, doc,
+                             ", ".join(times) if times else "FULLY BOOKED"))
+        S.append("APPOINTMENT DIARY — these are the only times that exist. Offer a time "
+                 "from this list or say the day is fully booked; never invent a time, "
+                 "and never offer one that is not written here:\n" + "\n".join(lines))
+
     esc_cond = "; ".join(esc.get("conditions", [])) or "the caller is angry or asks for a person"
     S.append(f'ESCALATE to a human (action.type="escalate") if: {esc_cond}; or the caller explicitly '
              f'asks for a person.')
@@ -491,7 +503,11 @@ class Session:
         # Facts this call is allowed to state: every number in the pack, plus every
         # number the CALLER themselves has said (their phone, party size, the time they
         # asked for). Anything else in a reply is an invention — see guard.py.
-        self._pack_numbers = pack_numbers(pack)
+        # Availability times are facts of this business exactly as prices are, so they
+        # join the grounding set. Stated separately from pack_numbers because it is a
+        # deliberate WIDENING of what the model may say — the documented trade-off in
+        # this codebase — and should be visible at the point it happens.
+        self._pack_numbers = pack_numbers(pack) | availability_numbers(pack)
         self._caller_numbers: set = set()
         self.messages = [{"role": "system", "content": build_system_prompt(pack)}]
         # domain knowledge + shared common/basic knowledge (courtesy, small talk, identity)
@@ -537,6 +553,13 @@ class Session:
         self.isolate_on = None                # None = follow config, True/False forced from the UI
         self._was_denoised = False            # last router verdict (gives it hysteresis)
         self._voiceprint_n = 0                # utterances folded into the print so far
+        # Per-call turn-taking policy, once an operator has chosen one. None = the
+        # server default. Kept on the SESSION so a reconnect resumes with the same
+        # patience rather than silently reverting mid-call.
+        self.turn_policy = None
+        self._since_relisten = 0              # turns since Whisper last had a free hand
+        self._lang_duds = 0                   # consecutive unusable transcripts
+        self._slot_conflict = None            # a datetime the diary could not honour
         self._gate_rejects = 0                # consecutive refusals — see check_speaker
         self._last_rescue = None              # why the last refused turn was given
                                               #   back, for the inspector; consumed once
@@ -600,8 +623,28 @@ class Session:
             # The model turns "कल सुबह 11 बजे" into "2024-05-29 11:00" — a calendar date
             # nobody said, whose digits are then ungrounded and block the confirmation.
             # Reject an invented YEAR; "Monday 4pm" is fine.
-            return not any(len(n) == 4 and 1900 <= int(n) <= 2100 and n not in self._caller_numbers
-                           for n in numbers_in(v) if n.isdigit())
+            if any(len(n) == 4 and 1900 <= int(n) <= 2100 and n not in self._caller_numbers
+                   for n in numbers_in(v) if n.isdigit()):
+                return False
+            # …and a time the diary does not have is not a slot, however plausible it
+            # sounds. Confirming "Dr Rao, tomorrow at 7pm" when the diary says 4:00 and
+            # 4:30 is the same class of failure as quoting a fee for a doctor who does
+            # not work here: a real-sounding answer nothing supports. `None` means the
+            # diary cannot judge it (no availability block, no day named, no clock time)
+            # and MUST pass — most packs have no diary at all.
+            free = slot_is_free(self.pack, self.slots.get("doctor"), v)
+            if free is False:
+                log.info("slot rejected: %r is not in the diary for %r",
+                         v[:40], self.slots.get("doctor"))
+                # Dropping it silently means the caller is asked "what day and time
+                # would suit you?" again, having just answered that question — which
+                # reads as the agent not listening, and is how this codebase produced a
+                # 20-turn call that stored one word. Remember the clash so the re-ask
+                # can say what is actually free instead.
+                self._slot_conflict = v
+                return False
+            self._slot_conflict = None
+            return True
         if field == "name":
             if not any(c.isalpha() for c in v):
                 return False                        # "9876512345" is a phone, not a name
@@ -715,10 +758,30 @@ class Session:
         t = " " + (text or "").lower() + " "
         return any(k.lower() in t for k in self.pack.get("not_offered", []))
 
-    def _keyword_escalation(self, text: str) -> bool:
-        kws = [k.lower() for k in self.pack.get("escalation", {}).get("keywords", [])]
-        t = text.lower()
-        return any(k in t for k in kws)
+    def _keyword_escalation(self, text: str):
+        """None, "staff", or "manager" — WHO this turn should be handed to.
+
+        Two different escalations were collapsed into one before, and they need
+        different people and different words. Someone describing chest pain needs
+        clinical staff and the ambulance number now. Someone who is angry, wants a
+        refund, or is asking for whoever is in charge needs the MANAGER — and hearing
+        "let me connect you to a team member" is what makes that caller repeat
+        themselves, louder, which is the failure the escalation exists to prevent.
+
+        Manager keywords are checked FIRST: "I want to speak to your manager about this
+        emergency" is a manager call, whatever else is in it.
+        """
+        block = self.pack.get("escalation", {}) or {}
+        t = (text or "").lower()
+
+        def hit(key):
+            return any(str(k).lower() in t for k in (block.get(key) or []))
+
+        if hit("manager_keywords"):
+            return "manager"
+        if hit("keywords"):
+            return "staff"
+        return None
 
     # ---- language resolution -----------------------------------------------
     def _effective_lang(self):
@@ -752,7 +815,11 @@ class Session:
             return locked
         if self._lang_cand:                       # keep the reply language STABLE while the
             return LANG_NAMES.get(self._lang_cand)  # latch corroborates (no per-clip flipping)
-        if self._last_det and self._last_det[1] >= 0.6:
+        # `prob is None` = the backend named a language without scoring it (whisper.cpp).
+        # Comparing that to 0.6 is a TypeError, not a fallback — this line would crash
+        # every reply-language decision on that backend. Trust the naming; the lock above
+        # is what corroborates it.
+        if self._last_det and (self._last_det[1] is None or self._last_det[1] >= 0.6):
             nm = LANG_NAMES.get(self._last_det[0])
             if nm:
                 return nm
@@ -939,13 +1006,42 @@ class Session:
         # caller got a slot question instead of their answer. Spoken forms count as the
         # caller having said the number, because they did.
         self._caller_numbers |= spoken_numbers(user_text)
-        if self._keyword_escalation(user_text):
-            self.escalated = True
-            msg = self.pack.get("escalation", {}).get(
-                "message", "Let me connect you to a team member right away.")
+        # A receptionist, not an assistant. Refused BEFORE the model is asked, for the
+        # same reason `not_offered` is: a 4B model told "only answer about this clinic"
+        # will still write the poem, and the grounding guard cannot catch it because
+        # a poem contains no ungrounded number. Also free — no generation at all.
+        why = off_domain(user_text, self.pack)
+        if why:
+            say = self.safe_say("scope")
             self._append("assistant",
-                         json.dumps({"say": msg, "action": {"type": "escalate"}}))
-            return {"say": msg, "action": {"type": "escalate"}, "escalated": True}
+                         json.dumps({"say": say, "action": {"type": "none"}},
+                                    ensure_ascii=False))
+            log.info("deterministic: refused (%s)", why)
+            return {"say": say, "action": {"type": "none"},
+                    "escalated": self.escalated, "refused": why}
+        esc = self._keyword_escalation(user_text)
+        if esc:
+            self.escalated = True
+            block = self.pack.get("escalation", {}) or {}
+            # WHO the call goes to depends on what was said. A medical emergency needs
+            # clinical staff and an ambulance number; a complaint, a refund or a demand
+            # for someone in charge needs the MANAGER, and telling that caller to hold
+            # for "a team member" is what makes them ask again, louder.
+            msg = block.get("message", "Let me connect you to a team member right away.")
+            to = "staff"
+            if esc == "manager":
+                mgr = block.get("manager") or {}
+                msg = block.get("manager_message") or msg
+                if mgr.get("name"):
+                    msg = msg.replace("{manager}", str(mgr["name"]))
+                to = "manager"
+            self._append("assistant",
+                         json.dumps({"say": msg, "action": {"type": "escalate",
+                                                            "to": to}},
+                                    ensure_ascii=False))
+            log.info("escalating to %s", to)
+            return {"say": msg, "action": {"type": "escalate", "to": to},
+                    "escalated": True}
         if self._asks_for_unoffered(user_text):
             say = self.safe_say("scope")          # already in the caller's language
             self._append("assistant",
@@ -1108,6 +1204,37 @@ class Session:
         """A booking is under way and something is still missing."""
         return bool(self.booking_started and self.missing_slots())
 
+    def _availability_line(self) -> str:
+        """"That time is taken — I have X and Y." Straight from the diary, so every
+        time in it is grounded and the guard cannot block the sentence."""
+        doctor = self.slots.get("doctor")
+        asked = getattr(self, "_slot_conflict", None) or ""
+        rows = [r for r in availability_for(self.pack, doctor) if r[2]]
+        # Offer the day they ASKED about first. Answering "tomorrow at 5?" with "we
+        # have 5pm today" is not an alternative, it is a different question.
+        same_day = [r for r in rows if r[0].lower() in asked.lower()]
+        rows = same_day or rows
+        if not rows:
+            full = (self.pack.get("availability", {}) or {}).get("full_line")
+            if full and doctor:
+                return full.replace("{doctor}", str(doctor).split("—")[-1].strip()) \
+                           .replace("{day}", "then")
+            return ""
+        day, doc, times = rows[0]
+        who = str(doc).split("—")[-1].strip() if doc else "we"
+        offer = times[:2]
+        return "That one is already taken, I'm afraid. %s has %s %s. Would %s suit?" % (
+            who, " or ".join(offer), day, "either" if len(offer) > 1 else "that")
+
+    def _after_booking_line(self) -> str:
+        """The pack's "anything else?" in the caller's language, or "" if it has none."""
+        table = (self.pack.get("escalation", {}) or {}).get("after_booking") or {}
+        if not table:
+            return ""
+        lang, _roman = self.reply_style(self.last_user_text())
+        code = NAME_TO_CODE.get(lang or "") or "en"
+        return str(table.get(code) or table.get("en") or "")
+
     def slot_question(self, field) -> str:
         """Ask for one booking field, in the caller's language.
 
@@ -1118,6 +1245,13 @@ class Session:
         """
         if not field:
             return ""
+        # A time the diary does not have is not "no answer" — it is a clash, and the
+        # only useful reply names the times that ARE free.
+        if field == "datetime" and getattr(self, "_slot_conflict", None):
+            offer = self._availability_line()
+            self._slot_conflict = None
+            if offer:
+                return offer
         slot_q = self.pack.get("booking", {}).get("slots", {}) or {}
         lang, roman = self.reply_style(self.last_user_text())
         code = NAME_TO_CODE.get(lang or "")
@@ -1394,6 +1528,15 @@ class Session:
                 # done; a genuine second booking re-opens it via _wants_to_book.
                 self.booking_started = False
                 self.pending_slot = None
+                # …and invite the next question. A caller who has just booked very often
+                # has one — directions, fees, what to bring — and an agent that simply
+                # stops speaking invites them to hang up instead of asking it. Appended
+                # in THEIR language: an English sign-off on a Hindi call reads as the
+                # agent changing person mid-sentence, and the language guard would throw
+                # the whole confirmation away for exactly that reason.
+                offer = self._after_booking_line()
+                if offer and offer not in say:
+                    say = f"{say} {offer}"
             else:                                 # model claimed booked but info is incomplete →
                 action["type"] = "collect"        # do NOT falsely confirm; ask for what's missing
                 action["missing"] = missing
@@ -1607,15 +1750,31 @@ class Session:
         res["heard"] = heard
         return res
 
-    def transcribe(self, audio) -> str:
-        """`audio` may be raw WAV bytes (from the WS) or a file path (CLI)."""
+    def transcribe(self, audio, partial: bool = False) -> str:
+        """`audio` may be raw WAV bytes (from the WS) or a file path (CLI).
+
+        `partial=True` marks a SPECULATIVE frame — a guess taken while the caller may
+        still be talking, used only to size the endpoint window and show live text. A
+        two-pass provider answers it with a tiny model; a single-model one ignores the
+        flag entirely. It never becomes the transcript.
+        """
         if not self.stt:
             return ""
         hint = ", ".join(self.pack.get("vocabulary", []))
         eff = self._effective_lang()
-        # STT language: a config/UI pin (eff) is honoured; in AUTO we let Whisper detect
-        # every turn (NOT pinned to the lock) so a wrong lock can be DETECTED and corrected —
-        # only the REPLY language is locked (stable), which is what stops the flip-flopping.
+        # STT language: a config/UI pin (eff) is honoured. In AUTO we USED to let Whisper
+        # detect on every single turn, so that a wrong lock could be detected and
+        # corrected. That reasoning only holds if detection is reliable, and on real
+        # short Indic turns it is not: a caller speaking Hindi was labelled Spanish,
+        # Urdu, Greek and Arabic on consecutive turns — and worse, the WORDS came back in
+        # those scripts, because the decode followed the wrong label. A wrong reply
+        # language is a nuisance; a wrong decode destroys the transcript, and everything
+        # downstream (the guard, the slots, the semantic search) is then working on
+        # nonsense.
+        # So: detect freely until the language is actually known, then decode in it —
+        # with a way out, because a lock that cannot be escaped is the failure the old
+        # comment was worried about. `_relisten_due` opens a free-detect turn
+        # periodically and immediately after the transcript stops making sense.
         # `denoise` is only passed when the caller has actually toggled it: stt.py is a
         # pluggable provider interface, and adding a required kwarg would break every
         # existing adapter. Providers that don't know it fall back cleanly.
@@ -1624,18 +1783,91 @@ class Session:
         # own switch alive ran DeepFilterNet a SECOND time on audio it had just
         # produced — a straight ~500ms of added latency, and a second pass of
         # suppression on speech that had already been through it once.
+        # "the caller's language is ours to work out" is NOT the same as "nothing is
+        # pinned". Once we pin the decode from the lock, `eff` stops being None — and
+        # the drift check below was gated on that, so a locked call could never re-lock
+        # and a caller who genuinely switched language was stuck forever. Track the
+        # question, not the variable.
+        auto = eff is None
+        if auto and self.lang_lock and not self._relisten_due():
+            eff = self.lang_lock
         kw = {"hint": hint, "language": eff, "fast": self.stt_fast, "denoise": False}
+        if partial and not self._digits_expected():
+            kw["partial"] = True
         try:
             text, det, prob = self.stt.transcribe(audio, **kw)
         except TypeError:
-            kw.pop("denoise", None)
-            log.debug("STT provider does not support the denoise switch — ignoring it")
-            text, det, prob = self.stt.transcribe(audio, **kw)
+            # A provider predating either kwarg must keep working rather than taking
+            # voice input down. `partial` goes first: it is the newer of the two.
+            kw.pop("partial", None)
+            try:
+                text, det, prob = self.stt.transcribe(audio, **kw)
+            except TypeError:
+                kw.pop("denoise", None)
+                log.debug("STT provider does not support the denoise switch — ignoring it")
+                text, det, prob = self.stt.transcribe(audio, **kw)
+        # A GUESS must not move call-wide state. The partial comes from a weaker model
+        # and a possibly half-finished sentence; latching the reply language off it is
+        # the same mistake as enrolling a voiceprint from a 450ms fragment, which once
+        # locked a caller out of their own call for its whole duration.
+        if partial:
+            return text
         if text and det:
             self._last_det = (det, prob)
-        if eff is None and text:
+        if auto and text:
+            # Runs even when we pinned the decode ourselves: a pinned turn reports the
+            # language it used, which simply confirms the lock, while a free-detect turn
+            # can move it. What must NOT reach here is a language the OPERATOR chose in
+            # the dropdown — that is a decision, not a guess.
             self._consider_lock(text, det, prob)
+        # Whether the language we are using is still working, judged on what it produced.
+        self.note_language_result(text)
         return text
+
+    # A one- or two-word turn carries no language evidence — see _consider_lock.
+    MIN_LOCK_WORDS = 3
+    # How often to hand Whisper a free hand again even while locked. A lock that can
+    # never be questioned is the failure the old always-detect design existed to avoid;
+    # this keeps the escape without paying for it on every turn.
+    RELISTEN_EVERY = 6
+    # …and immediately, if the locked language stops producing sensible transcripts.
+    RELISTEN_AFTER_DUDS = 2
+
+    def _relisten_due(self) -> bool:
+        """Should this turn be decoded with the language left open?
+
+        Two triggers, because a wrong lock shows up in two different ways. Occasionally
+        it is simply stale — the caller switched — and the periodic check finds that.
+        More often it announces itself: decoding Hindi as Greek yields empty or
+        unusable transcripts, turn after turn, and waiting six turns to notice is six
+        turns the caller spent not being understood.
+        """
+        self._since_relisten = getattr(self, "_since_relisten", 0) + 1
+        if getattr(self, "_lang_duds", 0) >= self.RELISTEN_AFTER_DUDS:
+            log.info("language: %d unusable turns on the %s lock — listening afresh",
+                     self._lang_duds, self.lang_lock)
+            self._lang_duds = 0
+            self._since_relisten = 0
+            return True
+        if self._since_relisten >= self.RELISTEN_EVERY:
+            self._since_relisten = 0
+            return True
+        return False
+
+    def note_language_result(self, text: str) -> None:
+        """Record whether the locked language is still producing sense.
+
+        Called with every committed transcript. An empty or one-word result is what a
+        wrong decode looks like from here — the audio had speech in it (the VAD, the
+        energy gate and the speaker gate all agreed) and the recogniser still produced
+        nothing usable.
+        """
+        if not self.lang_lock:
+            return
+        if len(_words(text)) < 2:
+            self._lang_duds = getattr(self, "_lang_duds", 0) + 1
+        else:
+            self._lang_duds = 0
 
     def _consider_lock(self, text: str, det: str | None, prob: float):
         """Decide/adjust the call's latched reply language. Trusts Whisper's own detection
@@ -1643,7 +1875,34 @@ class Session:
         which the Unicode block cannot), else the transcript's dominant script. Works for the
         FIRST latch AND for drift: if a clear language disagrees with the current lock for two
         turns (or once very confidently), we re-lock — so a wrong lock self-corrects."""
-        cand = det if (det and prob >= 0.55) else NAME_TO_CODE.get(dominant_script_lang(text) or "")
+        # `prob is None` means the backend detected a language but does not report a
+        # confidence for it — whisper.cpp's JSON carries `result.language` and no number.
+        # That is NOT the same as "0% confident", and treating it as such threw the
+        # detection away entirely and fell back to script guessing, which by this
+        # docstring's own admission cannot separate Marathi from Hindi. So an unquantified
+        # detection is trusted enough to be a CANDIDATE, and then has to earn the lock the
+        # slow way — two agreeing turns — because the fast single-turn relatch below does
+        # need a real number.
+        # A one- or two-word turn cannot establish a language. Observed live: "HI" and
+        # "Yeah" were enough to latch the call, and from then on a Hindi speaker was
+        # being decoded as something else every turn. Whisper needs material to identify
+        # a language, and "haan" is not material — short turns keep whatever lock the
+        # conversation already has rather than reinventing it.
+        # A short turn cannot establish a language — UNLESS its script says so outright.
+        #
+        # Both halves matter. Observed live: "HI" and "Yeah" were enough to latch the
+        # call, and from then on a Hindi speaker was decoded as something else every
+        # turn — Spanish, Greek, Urdu — with the WORDS coming back in those scripts.
+        # Two Latin characters are not evidence of a language; they are evidence of
+        # somebody saying hello.
+        # But "నాకు కావాలి" is two words and unambiguously Telugu, because the SCRIPT
+        # says so and a script is not a coincidence. Refusing that would leave a caller
+        # who switched language unable to correct the lock with anything short.
+        scripted = NAME_TO_CODE.get(dominant_script_lang(text) or "")
+        if not scripted and len(_words(text)) < self.MIN_LOCK_WORDS:
+            return
+        usable = det and (prob is None or prob >= 0.55)
+        cand = det if usable else NAME_TO_CODE.get(dominant_script_lang(text) or "")
         if not cand or cand not in LANG_NAMES:
             return                                   # no usable signal → keep whatever we have
         if cand == self.lang_lock:
@@ -1654,7 +1913,7 @@ class Session:
         else:
             self._lang_cand, self._lang_cand_n = cand, 1
         # (re)latch on a very confident single detection, or two agreeing turns (corroboration)
-        if (det == cand and prob >= 0.75) or self._lang_cand_n >= 2:
+        if (det == cand and prob is not None and prob >= 0.75) or self._lang_cand_n >= 2:
             self.lang_lock = cand
             self._lang_cand, self._lang_cand_n = None, 0
 
@@ -1880,6 +2139,13 @@ class Session:
             # It has now demonstrated, on THIS call and THIS microphone, that it can
             # recognise this caller. Only from here is it entitled to refuse anybody.
             self._gate_proven = True
+            # …and remember what "the caller" actually scores here. The configured 0.55
+            # was calibrated on synthetic voices; on a real microphone this caller's own
+            # turns measured 0.21-0.26 while a video playing in the room measured -0.06
+            # to 0.05. The separation is obvious and an absolute bar above both cannot
+            # see it. Learned ONLY from accepted turns, so a refused stranger can never
+            # drag the bar down onto itself.
+            self._note_caller_score(sim, speakers)
         if not ok and not self._gate_proven:
             # IT HAS NEVER RECOGNISED THEM. A gate that has not once matched the caller
             # has no evidence it can, and refusing on that is not caution — it is a coin
@@ -1897,6 +2163,13 @@ class Session:
             log.info("speaker: %.2f is below %.2f, but this gate has never matched the "
                      "caller on this call — it has not earned the right to refuse them",
                      sim if sim is not None else -1, self.speaker_gate.threshold)
+            # This turn IS going to be answered, so it is the system's own conclusion
+            # that this is the caller — and that is the only usable calibration signal
+            # on a microphone where every absolute threshold sits above where the caller
+            # actually lands. Learning here is what breaks the deadlock: the gate cannot
+            # accept until it knows the range, and it cannot know the range until it
+            # accepts something.
+            self._note_caller_score(sim, speakers)
             # Answer it, and let the RIVAL rule decide whose voice this is. Widening
             # blindly here would let one stranger's turn poison the print, which is the
             # thing the rival rule exists to prevent: it adopts a voice only once the
@@ -1930,7 +2203,15 @@ class Session:
                 # voice, which we remember as a RIVAL and still answer. Whichever voice
                 # comes back is the one having the conversation; a song does not follow
                 # up on its own question.
-                if sim < self.PROVISIONAL_FLOOR:
+                # …relative to the bar actually in use. An absolute 0.40 is above where
+                # this caller's microphone lands at all, so their own near misses could
+                # never widen the print and the provisional window expired with a print
+                # too thin to recognise them.
+                floor = min(self.PROVISIONAL_FLOOR,
+                            self.speaker_gate.effective_threshold()
+                            if hasattr(self.speaker_gate, "effective_threshold")
+                            else self.PROVISIONAL_FLOOR)
+                if sim < floor:
                     return self._note_rival(vec, sim, speakers)
                 log.info("speaker: %.2f is below %.2f, but the voiceprint is still "
                          "provisional (%d utterance(s)) and this is close enough to be "
@@ -2085,6 +2366,54 @@ class Session:
             log.info("speaker: %.2f does not match the provisional print — answering "
                      "anyway and remembering this voice", sim)
         return True, sim
+
+    def _digits_expected(self) -> bool:
+        """Is this turn likely to be a phone number being read out?
+
+        MEASURED. The tiny partial model changes the endpoint decision on 3 of 8 test
+        shapes against the accurate one, and the disagreement is not random:
+
+            "I would like to book an"                tiny HOLD   small normal   tiny right
+            "my mobile number is 9820429057"         tiny normal small CLOSE    small right
+            "my mobile number is eight nine two"     tiny HOLD   small normal   tiny right
+
+        Tiny is BETTER on dangling words and WORSE on digits — it mishears them, so
+        `looks_complete` never sees a full ten-digit number and the caller who has just
+        finished reading one out sits through the whole window instead of getting an
+        immediate confirmation. Digits are also where the window is widest
+        (EXPECT_EXTRA_MS phone = 600ms), so the error costs most exactly where it happens.
+
+        So the cheap model answers everything except the one shape it is bad at. A phone
+        partial costs 619ms instead of 179ms; it is the right 440ms to spend.
+        """
+        return (self.pending_slot or self.last_asked_slot) == "phone"
+
+    def _note_caller_score(self, sim, speakers) -> None:
+        """Tell the gate what "the caller" scores on this microphone.
+
+        THE SOURCE MATTERS, and my first attempt got it wrong. Learning only from turns
+        the gate ACCEPTED is circular: on this caller's microphone their own turns score
+        0.21-0.26 against a 0.55 bar, so nothing is ever accepted, so nothing is ever
+        learned, so the bar never moves. The adaptation was dead code in precisely the
+        situation it was built for. The same trap catches the other two mechanisms —
+        widening needs PROVISIONAL_FLOOR 0.40, and rival adoption needs the same voice
+        twice — because every one of them is keyed to an absolute number that sits above
+        where this microphone actually lands.
+
+        So the source is what the ENGINE concluded, not what the gate scored: a turn it
+        went on to ANSWER. That is the system's own decision that this was the caller,
+        and if we are willing to answer on it we are willing to calibrate on it.
+
+        Two guards keep that honest. A clip KNOWN to hold more than one voice teaches
+        nothing — the same rule that stops a mixed clip widening the print, for the same
+        reason. And the bar is a MEDIAN over recent turns, so a stray voice answered
+        once during the provisional phase cannot drag it onto itself.
+        """
+        if (speakers or 1) > 1:
+            return
+        note = getattr(self.speaker_gate, "note_caller_score", None)
+        if note:
+            note(sim)
 
     def _widen_voiceprint(self, audio):
         """Fold this utterance into the caller's print.

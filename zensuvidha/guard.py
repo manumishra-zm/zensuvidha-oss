@@ -914,3 +914,262 @@ def check_reply(text: str, *, pack: dict, allowed_numbers, lang_name: str | None
                 return safe_line("unknown", lang_name, pack, romanized), reason
 
     return out, reason
+
+
+# --------------------------------------------------------------------------- #
+# Domain guardrail — this is a receptionist, not an assistant
+# --------------------------------------------------------------------------- #
+# The model self-declares `kind: out_of_scope` and that mostly works, but "mostly" is
+# the same word that made every other rule in this file necessary. A 4B model asked to
+# write a poem writes a poem; asked to ignore its instructions it often obliges; asked
+# who the prime minister is, it answers, cheerfully and sometimes wrongly, in the voice
+# of a clinic. None of that is caught by the grounding guard, because none of it
+# contains an ungrounded NUMBER — it is the same shape as the invented-services bug
+# (`_asks_for_unoffered`), which was fixed the same way: deterministically, before the
+# model is asked.
+#
+# TWO CLASSES, deliberately treated differently.
+
+# 1. Attempts to change what the agent IS. There is no legitimate caller phrasing for
+#    any of these, so they are refused unconditionally.
+_INJECTION = (
+    "ignore previous", "ignore prior", "ignore above", "ignore all previous",
+    "ignore your instruction", "disregard previous", "disregard your",
+    "forget your instruction", "forget everything", "system prompt", "your prompt",
+    "you are chatgpt", "you are gpt", "you are an ai language model", "developer mode",
+    "jailbreak", "dan mode", "pretend you are", "pretend to be", "act as if you",
+    "roleplay as", "role play as", "from now on you", "new instruction",
+    "repeat your instruction", "print your instruction", "reveal your",
+    "अपने निर्देश भूल", "पिछले निर्देश", "सिस्टम प्रॉम्प्ट",
+)
+
+# 2. Whole subjects a receptionist does not deal in. These CAN appear innocently, so
+#    they are only refused when the turn shows no sign of being about the business —
+#    a caller asking "do you do a cricket physio programme" must not be refused because
+#    they said cricket.
+_OTHER_DOMAIN = (
+    "write a poem", "write a song", "write an essay", "write code", "write a program",
+    "python", "javascript", "sql query", "debug this", "c++", "html", "css",
+    "regex", "algorithm", "compile", "poem", "essay", "lyrics", "screenplay",
+    # NOT a bare "script": in Indian English a prescription is routinely called one,
+    # and refusing "can I get my script refilled" is exactly the false positive this
+    # whole function is built to avoid.
+    "capital of", "prime minister", "president of", "who won", "cricket score",
+    "match score", "stock price", "share price", "bitcoin", "crypto",
+    "tell me a joke", "tell a joke", "joke", "sing a song", "recipe for", "how to cook",
+    "weather forecast", "what is the weather", "translate this into",
+    "solve this equation", "math problem", "homework", "essay on",
+    "movie", "netflix", "song lyrics",
+    "कविता लिखो", "चुटकुला", "मौसम कैसा", "राजधानी",
+)
+
+
+# 1b. Audio from a SCREEN, not a caller. A video, a reel or an ad playing near the
+#     microphone gets transcribed like anything else and then answered — observed live:
+#     "Comment, apple below and I'll send you…" reached the model and got a polite
+#     reply. The speaker gate is supposed to catch this, and cannot yet: on a real
+#     microphone it scores the genuine caller 0.28 against a 0.55 threshold, so it has
+#     no margin to refuse anyone with.
+#     These phrases are addressed to an audience, never to a receptionist, so like the
+#     instruction-override class they need no corroboration. Kept separate from
+#     stt._NEVER_SAID, which drops Whisper's SILENCE artifacts — this is real speech
+#     from a real speaker who simply is not on the call.
+_BROADCAST = (
+    "comment below", "comment down below", "in the comments", "link in bio",
+    "link in the description", "like and subscribe", "subscribe to my", "hit the bell",
+    "smash that like", "don't forget to like", "follow for more", "follow me for",
+    "in this video", "in today's video", "welcome back to my", "swipe up",
+    "check out the link", "share this video", "full video on", "part two of",
+    "let me know in the", "tap the link",
+)
+
+# …and the same phrases with room for Whisper to have misheard a word in the middle.
+# Observed live: "Comment, apple below and I'll send you…" — the caller's microphone
+# picked up a video, and "and" came back as "apple". A literal match needs the words
+# adjacent; background audio is exactly the case where they will not be, because it is
+# quiet and off-axis and gets transcribed badly.
+_BROADCAST_RE = re.compile(
+    r"\b(comment|comments)\b.{0,24}\bbelow\b"
+    r"|\bsubscribe\b.{0,24}\bchannel\b"
+    r"|\blink\b.{0,20}\b(bio|description)\b"
+    r"|\b(like|follow|share)\b.{0,16}\b(video|channel|page|reel)\b", re.I)
+
+
+def _mentions_business(text: str, pack: dict) -> bool:
+    """Does this turn look like it is about THIS business at all?
+
+    Checked against the pack's own vocabulary and knowledge tags rather than a list
+    written here, so a gym asking about "protein" and a clinic asking about "X-ray"
+    are both recognised without either pack knowing about the other.
+    """
+    t = (text or "").lower()
+    terms = [str(v).lower() for v in (pack or {}).get("vocabulary", []) if v]
+    for entry in (pack or {}).get("knowledge", []) or ():
+        terms += [str(x).lower() for x in (entry.get("tags") or [])]
+    for key in ("booking", "services"):
+        block = (pack or {}).get(key)
+        if isinstance(block, dict):
+            terms += [str(k).lower() for k in block]
+    # Anything a receptionist obviously handles, in any pack.
+    terms += ["appointment", "book", "booking", "timing", "open", "close", "fee",
+              "charge", "price", "cost", "address", "location", "cancel", "reschedule",
+              "बुक", "समय", "पता", "शुल्क", "కుక", "సమయం", "చిరునామా"]
+    return any(term and term in t for term in terms)
+
+
+def off_domain(text: str, pack: dict | None = None) -> str | None:
+    """Return why this turn should be refused outright, or None to let it through.
+
+    Conservative by construction, because the cost is asymmetric in the direction this
+    codebase keeps re-learning: refusing a real caller is far worse than answering one
+    silly question. A subject-matter match is only acted on when the turn ALSO shows no
+    sign of being about the business.
+    """
+    t = norm_digits((text or "").lower().strip())
+    if not t:
+        return None
+    for marker in _INJECTION:
+        if marker in t:
+            return "instruction override"
+    for marker in _BROADCAST:
+        if marker in t:
+            return "audio from a screen"
+    if _BROADCAST_RE.search(t):
+        return "audio from a screen"
+    if _mentions_business(text, pack or {}):
+        return None                       # they are talking about the business
+    for marker in _OTHER_DOMAIN:
+        if marker in t:
+            return "another subject"
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# The diary
+# --------------------------------------------------------------------------- #
+def availability_numbers(pack: dict) -> set:
+    """Every number appearing in the availability block, so times can be SPOKEN.
+
+    `pack_numbers` walks the pack already, but the grounding guard is only as useful as
+    it is honest: these are being added deliberately and they widen what the model is
+    allowed to say. Kept a separate function so that is visible rather than incidental.
+    """
+    out = set()
+    for day, doctors in ((pack or {}).get("availability", {}).get("days", {}) or {}).items():
+        for times in (doctors or {}).values():
+            for t in times or ():
+                out |= numbers_in(str(t))
+    return out
+
+
+def availability_for(pack: dict, doctor: str | None = None, day: str | None = None):
+    """[(day, doctor, [times])] — the diary, optionally narrowed.
+
+    Matching is on the caller's own words: a doctor name is matched loosely because the
+    caller says "Dr Rao" and the pack key is "Cardiology — Dr Rao", and a day is matched
+    the same way for "tomorrow morning" against "tomorrow".
+    """
+    days = (pack or {}).get("availability", {}).get("days", {}) or {}
+    d_want = _day_key(days, day) if day else None
+    out = []
+    for d, doctors in days.items():
+        if d_want is not None and d != d_want:
+            continue
+        for doc, times in (doctors or {}).items():
+            if doctor and not _doctor_matches(doc, doctor):
+                continue
+            out.append((d, doc, list(times or [])))
+    return out
+
+
+# Titles carry no identity. Matching on them made "Dr Rao" select every doctor in the
+# diary, and a fully-booked dermatologist came back as free because a cardiologist had
+# a slot — the worst possible direction for this to fail in.
+_DOCTOR_STOPWORDS = {"dr", "dr.", "doctor", "the", "with", "and", "for", "डॉ", "डॉक्टर"}
+
+
+def _doctor_matches(key: str, spoken: str) -> bool:
+    k = (key or "").lower()
+    said = (spoken or "").lower().strip()
+    if not said:
+        return True
+    if said in k:
+        return True
+    words = [w for w in re.split(r"[\s,\u2014-]+", said)
+             if len(w) >= 3 and w not in _DOCTOR_STOPWORDS]
+    return any(w in k for w in words)
+
+
+def _day_key(days: dict, spoken: str):
+    """The LONGEST day name contained in what the caller said.
+
+    "day after tomorrow" contains "tomorrow", so a first-match search books them in
+    for the wrong day — and confirms it confidently, which is worse than refusing.
+    """
+    said = (spoken or "").lower()
+    hits = [d for d in days if d.lower() in said]
+    return max(hits, key=len) if hits else None
+
+
+def slot_is_free(pack: dict, doctor: str | None, spoken: str) -> bool | None:
+    """Is the time the caller asked for actually in the diary?
+
+    None means "cannot tell" — no diary, no day named, nothing to match — and every
+    caller of this MUST treat that as permission to continue. Refusing a booking
+    because a YAML block is absent would break every pack that has no diary at all.
+    """
+    days = (pack or {}).get("availability", {}).get("days", {}) or {}
+    if not days or not spoken:
+        return None
+    said = norm_digits(spoken.lower())
+    day = _day_key(days, said)
+    if day is None:
+        return None                       # they named a time but not a day we know
+    rows = availability_for(pack, doctor, day)
+    if not rows:
+        return None
+    want = numbers_in(said)
+    if not want:
+        return None                       # "tomorrow morning" — no clock time to check
+    for _d, _doc, times in rows:
+        for t in times:
+            if numbers_in(str(t)) & want:
+                return True
+    return False
+
+
+# --------------------------------------------------------------------------- #
+# Fillers — "still thinking", which silence cannot see
+# --------------------------------------------------------------------------- #
+# Silence says nothing about WHY someone stopped. A caller who trails off on "um" or
+# "मतलब" has not finished; they are searching for the next word, and the endpointer has
+# no way to know that from the gap alone — the gap looks identical to a finished
+# sentence. This is the signal ElevenLabs' turn-taking model reads and ours did not.
+#
+# Deliberately NARROWER than `_HESITATIONS` in orchestrator.py, which exists to stop a
+# grunt being filed as somebody's NAME. "haan" and "ठीक" belong there and NOT here: a
+# bare "yes" is a complete answer, and treating it as hesitation would make every
+# confirmation in every booking wait an extra half second.
+_TRAILING_FILLERS = frozenset("""
+um umm uhm uh uhh er err erm ah aah hmm hmmm mmm like
+matlab yaani yani vo woh kya
+अं उम्म हम्म मतलब यानी वो क्या ऐसा
+అంటే ఏమిటంటే అదీ
+என்னன்னா அதாவது
+""".split())
+
+
+def ends_with_filler(text: str) -> bool:
+    """Does this turn TRAIL OFF on a hesitation?
+
+    Only the last word counts. "Um, I need an appointment" is a complete request that
+    happens to start with a filler; "I need an appointment with, um" is not.
+    """
+    words = _norm_words(text)
+    if not words:
+        return False
+    # A question is finished whatever it ends on — the same rule looks_incomplete uses,
+    # and for the same reason ("…anything else, yeah?").
+    if (text or "").strip().endswith(("?", "؟")):
+        return False
+    return words[-1] in _TRAILING_FILLERS

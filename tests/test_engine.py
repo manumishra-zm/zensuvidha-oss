@@ -71,18 +71,67 @@ class FakeSTT:
         return item if isinstance(item, tuple) else (item, None, 0.0)
 
 
-def test_auto_language_latches_reply_but_stt_stays_auto():
-    # A CONFIDENT Whisper detection latches the REPLY language, but STT stays auto-detect
-    # (NOT pinned to the lock) so a wrong lock can later self-correct (drift-unlock).
+def test_auto_language_pins_the_decode_once_it_knows():
+    """The decode FOLLOWS the lock, and that is a deliberate reversal.
+
+    STT used to stay on auto-detect for every turn so that a wrong lock could correct
+    itself. That reasoning only holds while detection is reliable, and on real short
+    Indic turns it is not: a caller speaking Hindi was labelled Spanish, Urdu, Greek and
+    Arabic on consecutive turns — and the WORDS came back in those scripts, because the
+    decode followed the wrong label. A wrong reply language is a nuisance; a wrong
+    decode destroys the transcript, and the guard, the slots and the semantic search are
+    then all working on nonsense.
+
+    The escape is `_relisten_due`, tested below — not a permanently open decode."""
     stt = FakeSTT([("नमस्ते मुझे अपॉइंटमेंट चाहिए", "hi", 0.95), ("ok thanks", "hi", 0.9)])
     s = Session(load_pack("clinic"), FakeLLM({"say": "x", "action": {"type": "none"}}), stt=stt)
     s.lang = None                       # explicit auto-detect
     s.transcribe(b"a")
     assert s.lang_lock == "hi"          # reply language latched Hindi
-    assert stt.calls[0] is None         # STT auto-detected
+    assert stt.calls[0] is None         # …nothing known yet, so detect freely
     s.transcribe(b"b")
-    assert stt.calls[1] is None         # STT still auto (not pinned) → drift is detectable
+    assert stt.calls[1] == "hi", "the decode ignored what the call already knows"
     assert s.reply_language("ok thanks") == "Hindi"   # reply stays stable in the locked language
+
+
+def test_a_hello_does_not_decide_the_language_of_the_call():
+    """"HI" and "Yeah" latched the call live, and every later Hindi turn was decoded as
+    something else. Two Latin characters are evidence of somebody saying hello."""
+    stt = FakeSTT([("HI", "en", 0.98), ("नमस्ते मुझे अपॉइंटमेंट चाहिए", "hi", 0.95)])
+    s = Session(load_pack("clinic"), FakeLLM({"say": "x", "action": {"type": "none"}}), stt=stt)
+    s.lang = None
+    s.transcribe(b"a")
+    assert s.lang_lock is None, "a one-word Latin turn locked the call"
+    s.transcribe(b"b")
+    assert s.lang_lock == "hi", "a real sentence did not latch"
+
+
+def test_a_wrong_lock_is_escaped_when_it_stops_producing_sense():
+    """Decoding Hindi as Greek yields empty or one-word transcripts turn after turn.
+    Waiting for the periodic re-check would be several more turns of not being
+    understood, so unusable output opens the decode immediately."""
+    stt = FakeSTT([("नमस्ते मुझे अपॉइंटमेंट चाहिए", "hi", 0.95),
+                   ("", None, 0.0), ("", None, 0.0), ("ok", "hi", 0.9)])
+    s = Session(load_pack("clinic"), FakeLLM({"say": "x", "action": {"type": "none"}}), stt=stt)
+    s.lang = None
+    s.transcribe(b"a")
+    assert stt.calls[0] is None and s.lang_lock == "hi"
+    s.transcribe(b"b"); s.transcribe(b"c")        # two duds on the locked language
+    s.transcribe(b"d")
+    assert stt.calls[-1] is None, "a lock that stopped working was never questioned"
+
+
+def test_the_decode_is_reopened_periodically_even_when_it_looks_fine():
+    """A lock that can never be questioned is the failure the old always-detect design
+    existed to avoid. Keep the escape, just stop paying for it every turn."""
+    good = ("नमस्ते मुझे अपॉइंटमेंट चाहिए", "hi", 0.95)
+    stt = FakeSTT([good] * (Session.RELISTEN_EVERY + 2))
+    s = Session(load_pack("clinic"), FakeLLM({"say": "x", "action": {"type": "none"}}), stt=stt)
+    s.lang = None
+    for _ in range(Session.RELISTEN_EVERY + 2):
+        s.transcribe(b"x")
+    assert stt.calls.count(None) >= 2, (
+        "the decode was pinned forever: %s" % stt.calls)
 
 
 def test_language_drift_unlocks_on_confident_detection():
@@ -189,9 +238,9 @@ def test_booking_side_effect(tmp_path, monkeypatch):
 
     payload = {"say": "All set.", "action": {"type": "book_appointment",
                "slots": {"name": "Anil", "phone": "9876543210",
-                         "doctor": "Dr Sharma", "datetime": "tomorrow 5pm"}}}
+                         "doctor": "Dr Sharma", "datetime": "tomorrow 10am"}}}
     s = Session(load_pack("clinic"), FakeLLM(payload))
-    res = s.handle_text("book with Dr Sharma tomorrow 5pm, Anil, 9876543210")
+    res = s.handle_text("book with Dr Sharma tomorrow 10am, Anil, 9876543210")
     assert res["action"]["type"] == "book_appointment"
     assert res["action"].get("booking_id") == 1
     assert "#1" in res["say"]

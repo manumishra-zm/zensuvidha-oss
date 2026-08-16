@@ -87,6 +87,22 @@ scenarios:
   - {name: "Fees / package enquiry", do: "Give the exact consultation fee or package price from the list; don't estimate."}
 
 escalation:
+  # WHO the call goes to. Two different lists because they need two different people
+  # and two different sentences — a caller in pain needs clinical staff and 108 now; a
+  # caller who is angry or wants a refund needs whoever is in charge, and telling them
+  # to hold for "a team member" is what makes them ask again, louder.
+  # manager_keywords are matched FIRST, so "I want your manager about this emergency"
+  # reaches the manager.
+  manager:
+    name: "Mrs Latha Nair"
+    role: "Clinic Manager"
+    phone: "+91 20 1234 5678"
+    hours: "Mon-Sat, 10 am to 6 pm"
+  manager_keywords: ["manager","supervisor","in charge","incharge","owner","complaint","complain",
+    "refund","money back","overcharg","wrong bill","billing issue","rude","misbehav","legal","consumer court",
+    "मैनेजर","प्रबंधक","शिकायत","रिफंड","पैसे वापस","गलत बिल",
+    "మేనేజర్","ఫిర్యాదు","రీఫండ్","డబ్బు వాపసు"]
+  manager_message: "I'm sorry this has come up — I'm putting you through to {manager}, our Clinic Manager, right now. If the line drops, she is on +91 20 1234 5678, Monday to Saturday, 10 am to 6 pm."
   keywords: ["emergency","chest pain","bleeding","accident","ambulance","human","doctor now","breathing","unconscious","severe pain","heart attack"]
   conditions:
     - "the caller describes a medical emergency (chest pain, bleeding, breathing trouble, accident, unconsciousness)"
@@ -140,6 +156,46 @@ not_offered:
   - "admit"
   - "भर्ती"
   - "icu"
+
+# ---- what the front desk can actually SEE ------------------------------------------
+# Before this, "is Dr Rao free tomorrow at four?" had exactly two possible answers, and
+# both were bad: refuse (the grounding guard blocks any time the pack does not contain),
+# or invent one. Inventing is the documented failure mode here — the model answered
+# "consultation fee ₹500" for a neurologist the clinic does not employ, using a real
+# number from a different fact.
+#
+# So the diary goes in the pack, the same way prices and timings already do. In a real
+# deployment this block is what an EMR/calendar integration writes; as a YAML file it is
+# the same shape, which is the point — nothing above it has to change later.
+#
+# TRADE-OFF, and it is the one this project keeps meeting: every time here WIDENS
+# allowed_numbers and weakens the grounding guard. "4" being a real slot means "4" can
+# no longer be caught as invented. Availability is worth that; a longer list would not be.
+availability:
+  # Relative day names, because a caller says "tomorrow", not a date. `full: true` is a
+  # real answer, not a missing one — being told a day is booked is useful.
+  days:
+    today:
+      "General Physician — Dr Anil Sharma": ["11:30 am", "12:00 noon", "4:30 pm"]
+      "Dermatology — Dr Priya Mehta": []            # fully booked
+      "Cardiology — Dr Rao": ["5:00 pm"]
+      "Pediatrics — Dr Fernandes": ["3:00 pm", "3:30 pm"]
+      "Gynaecology — Dr Iyer": []                   # not in today
+    tomorrow:
+      "General Physician — Dr Anil Sharma": ["9:30 am", "10:00 am", "6:00 pm"]
+      "Dermatology — Dr Priya Mehta": ["10:30 am", "11:00 am"]
+      "Cardiology — Dr Rao": ["4:00 pm", "4:30 pm"]
+      "Pediatrics — Dr Fernandes": ["9:00 am"]
+      "Gynaecology — Dr Iyer": ["11:00 am", "5:30 pm"]
+    day after tomorrow:
+      "General Physician — Dr Anil Sharma": ["10:00 am", "10:30 am", "11:00 am"]
+      "Dermatology — Dr Priya Mehta": ["4:00 pm"]
+      "Cardiology — Dr Rao": []
+      "Pediatrics — Dr Fernandes": ["9:30 am", "10:00 am"]
+      "Gynaecology — Dr Iyer": ["10:00 am"]
+  # Said when the caller asks for a doctor/day with nothing left. Never invent an
+  # alternative time — offer the next day the diary actually has.
+  full_line: "I'm afraid {doctor} is fully booked {day}."
 
 knowledge:
   - {q: "What are your timings?", core: true, tags: ["hours","open","timing","sunday","lunch","holiday"], a: "We're open Monday to Saturday, 9am to 8pm, with a lunch break from 2 to 3pm. On Sundays we're open 9am to 1pm for emergencies only.",
