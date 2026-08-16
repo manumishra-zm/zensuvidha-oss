@@ -389,6 +389,194 @@ def test_frames_in_flight_cannot_reach_a_rebuilt_utterance():
         "handleFrame must bail on a rebuild BEFORE it buffers anything"
 
 
+# --------------------------------------------------------- which level opens a turn
+
+def test_the_energy_gate_uses_the_speech_band():
+    """`vad-worklet.js` computed `rmsBand` through its 300-3400Hz cascade, posted it
+    every 32ms, and the gate read full-band `rms` — so the filter that was written and
+    benchmarked was measured and discarded on every frame of every call.
+
+    scripts/bench_vad.py, on the filter as it ships: separation improves on all five
+    interference types, mean 3.97x, worst case traffic at 1.11x.
+    """
+    fn = _extract(SRC, "handleFrame")
+    assert "rmsBand" in fn, "the speech-band level is still being thrown away"
+
+
+def test_the_absolute_floor_moved_with_the_signal():
+    """The half that makes the switch safe rather than merely better.
+
+    The gate is max(floor*4, ABS). The adaptive half self-corrects because it tracks
+    whatever it is fed; the ABSOLUTE half does not. Band-limiting takes speech itself to
+    0.81 of its full-band level, so leaving 0.006 in place would have made the gate
+    quietly deafer — a silent desensitisation, which is the failure mode this codebase
+    keeps finding late.
+    """
+    fn = _extract(SRC, "handleFrame")
+    assert "0.005" in fn, "the absolute floor must scale with the band-limited signal"
+    assert "0.006" in fn, "...and the full-band path must keep its own measured floor"
+
+
+def test_the_full_band_floor_survives_for_the_two_things_that_need_it():
+    """`noiseFloor` is also read by the self-echo bar — compared against `agentLevel()`,
+    which is full-band — and by the drop-tiny-utterance check, against a full-band peak.
+    Feeding either a band-limited number would move two thresholds nothing measured."""
+    assert "bandFloor" in SRC, "the speech gate needs its own floor"
+    fn = _extract(SRC, "handleFrame")
+    assert "noiseFloor=noiseFloor*0.97" in fn.replace(" ", ""), \
+        "the full-band floor must still be learned"
+    assert "bandFloor=bandFloor*0.97" in fn.replace(" ", ""), \
+        "...and the band floor learned from the measure it is compared against"
+    # The echo bar is the one that would break silently.
+    assert "noiseFloor*6" in fn.replace(" ", "")
+
+
+def test_the_gate_falls_back_when_the_band_level_is_absent():
+    """The ScriptProcessor path posts no `rmsBand` (it has no filter). It must keep
+    working on full-band rms with the floor that was measured for it."""
+    fn = _extract(SRC, "handleFrame").replace(" ", "")
+    assert "f.rmsBand!=null" in fn, "the band level has to be optional"
+
+
+def test_the_vad_bench_measures_the_shipping_filter():
+    """The stated lesson from the last time this cascade was measured: the ideal FFT
+    said 4.47x and the real two-pole filter delivered 2.79x. A numpy port of the filter
+    would be measuring something that does not ship."""
+    bench = os.path.join(ROOT, "scripts", "bench_vad.py")
+    src = open(bench, encoding="utf-8").read()
+    assert "vad-worklet.js" in src
+    assert "class Biquad" in src, "it must lift the real class, not reimplement it"
+
+
+# ------------------------------------------------------------- the health tick
+
+def test_there_is_a_periodic_health_check_at_all():
+    """Before this the client had exactly two timers — the spectrogram and the mascot
+    animation — and every recovery path was event-driven. That covers the failures the
+    platform announces; the ones it does not announce are the ones that leave a call
+    looking alive."""
+    assert "healthTick" in SRC
+    assert "setInterval(healthTick" in SRC.replace(" ", "")
+
+
+def test_the_health_tick_notices_a_machine_that_slept():
+    """A closed lid does not hide the tab, so `visibilitychange` never fires — the
+    desktop equivalent of the mobile backgrounding case, and previously uncovered. A
+    tick that arrives seconds late is the only evidence available."""
+    fn = _extract(SRC, "healthTick")
+    assert "SLEEP_JUMP_MS" in fn
+    assert "restartMic" in fn
+
+
+def test_the_health_tick_notices_a_stalled_worklet():
+    """Frames stop arriving while `track.readyState` stays "live" — a known outcome of
+    a route change, with no event for it."""
+    fn = _extract(SRC, "healthTick")
+    assert "lastFrameAt" in fn and "FRAME_STALL_MS" in fn
+    assert "lastFrameAt=Date.now()" in SRC.replace(" ", ""), \
+        "something must actually stamp the frame clock"
+
+
+def test_the_health_tick_notices_a_half_open_socket():
+    """`ws.readyState` stays 1 on a dead TCP connection — the normal result of a Wi-Fi
+    to cellular handover. Every send guard in the client trusts that 1, so this is the
+    only thing that can contradict it."""
+    fn = _extract(SRC, "healthTick")
+    assert "SOCKET_DEAD_MS" in fn
+    assert "ws.close()" in fn.replace(" ", ""), \
+        "closing it ourselves is what routes into the reconnect path that already works"
+    assert "lastServerMsgAt=Date.now()" in SRC.replace(" ", "")
+
+
+def test_the_server_answers_a_keepalive():
+    """The half-open check above is only as good as the reply that proves it."""
+    import inspect
+
+    from zensuvidha import server
+    src = inspect.getsource(server.ws)
+    assert '"ping"' in src and '"pong"' in src
+
+
+def test_the_receive_loop_exempts_keepalives_from_presence():
+    """The trap this whole heartbeat walks into.
+
+    The receive loop marks presence on EVERY inbound message. The browser pings every
+    5s, which is inside both idle windows — so without an exemption the heartbeat
+    silently disables `idle_prompt_seconds` AND `idle_hangup_seconds` for every browser
+    caller. The feature would look like it worked; only the thing it broke is invisible.
+    """
+    import inspect
+
+    from zensuvidha import server
+    src = inspect.getsource(server.ws)
+    assert "is_keepalive(msg)" in src, "a ping must not reset the idle timer"
+    assert server.IDLE_PROMPT_S > 0 and server.IDLE_HANGUP_S > 0
+
+
+@pytest.mark.parametrize("frame,expected", [
+    ({"text": '{"type":"ping"}'}, True),
+    # A caller who TYPES the word. Decided on the parsed type precisely so this keeps
+    # resetting their own idle timer — otherwise the agent asks "are you still there?"
+    # at somebody who is mid-conversation.
+    ({"text": '{"type":"text","text":"ping"}'}, False),
+    ({"text": '{"type":"text","text":"ping the doctor for me"}'}, False),
+    ({"text": '{"type":"commit"}'}, False),
+    ({"text": '{"type":"cancel"}'}, False),
+    # Audio is the caller unambiguously present.
+    ({"bytes": b"RIFF...."}, False),
+    # Unparseable still came from a client that is doing something — presence is the
+    # safe answer, and the body below handles the malformed frame on its own.
+    ({"text": "not json at all"}, False),
+    ({"text": "null"}, False),
+    ({"text": "[]"}, False),
+    ({"text": '{"no_type":1}'}, False),
+    ({"type": "websocket.disconnect"}, False),
+])
+def test_only_a_real_keepalive_is_exempt(frame, expected):
+    from zensuvidha.server import is_keepalive
+    assert is_keepalive(frame) is expected
+
+
+def test_the_keepalive_interval_is_inside_the_idle_window():
+    """If the ping cadence ever drifts past the idle windows the exemption above stops
+    mattering — and if it drifts past the client's own dead-socket timeout, every call
+    reconnects on a loop. Pin the relationship, not the numbers."""
+    import re
+
+    from zensuvidha import server
+    ping = int(re.search(r"PING_EVERY_MS\s*=\s*(\d+)", SRC).group(1))
+    dead = int(re.search(r"SOCKET_DEAD_MS\s*=\s*(\d+)", SRC).group(1))
+    assert ping * 2 <= dead, \
+        "a single lost ping must not be enough to declare the socket dead"
+    assert ping / 1000.0 < server.IDLE_HANGUP_S, \
+        "the keepalive has to be more frequent than the hang-up it must not prevent"
+
+
+def test_a_lost_line_is_shown_to_the_caller():
+    """The turn was discarded in silence while the orb still read LISTENING, and the
+    only sign was a word in a status line nobody on a phone is looking at."""
+    fn = _extract(SRC, "endUtterance")
+    assert "_lineDown" in fn
+    assert "setCaption" in fn
+
+
+def test_the_lost_line_notice_is_not_attributed_to_the_agent():
+    """setCaption labels everything 'You' or 'AI'. A connection notice rendered as 'AI'
+    puts words in the receptionist's mouth at exactly the moment the caller must not
+    believe they were answered."""
+    fn = _extract(SRC, "setCaption")
+    assert "'sys'" in fn or '"sys"' in fn
+
+
+def test_frame_errors_are_not_swallowed_silently():
+    """A persistent throw in handleFrame means no turn is ever detected, with nothing
+    anywhere to say so. Rate-limited, because at ~31 frames a second an unguarded
+    console.error is the next bug."""
+    fn = _extract(SRC, "pump")
+    assert "console.error" in fn
+    assert "%" in fn, "and rate-limited"
+
+
 # ------------------------------------------------- getting onto the phone at all
 
 MOBILE_SH = os.path.join(ROOT, "scripts", "run_mobile.sh")

@@ -736,6 +736,12 @@ let wakeLock=null;              // screen-wake lock, so a phone call survives th
 let micRecovering=false;        // a rebuild is already in flight — never start a second
 let vad='silence', uttPCM=[], preRoll=[], micMode='auto', pttHeld=false;
 let speechMs=0, silenceMs=0, bargeMs=0, uttMs=0, noiseFloor=0.004, specSent=false;
+// The speech-band floor the energy gate compares against — see handleFrame. Separate
+// from noiseFloor on purpose: two consumers still need the full-band number.
+let bandFloor=0.004;
+// When did a mic frame last arrive, and when did the server last say anything. Both are
+// "is this call still real" signals that no event fires for — see the health tick.
+let lastFrameAt=0, lastServerMsgAt=0, agcOn=false;
 let maxGapMs=0;                 // longest pause inside the current utterance — see LATCH_MS
 // How this caller actually pauses. A fixed window suits nobody: some people rattle
 // through a sentence, others stop dead in the middle of one to think. We watch the
@@ -954,12 +960,19 @@ async function sileroProb(f16k){
 // pump: the state machine always sees them in order, and if inference ever falls
 // behind realtime we fall back to the energy gate rather than adding latency.
 let frameQ=[], pumping=false;
-function onFrameMsg(f){ frameQ.push(f); if(!pumping) pump(); }
+function onFrameMsg(f){ lastFrameAt=Date.now(); frameQ.push(f); if(!pumping) pump(); }
+let _pumpErrs=0;
 async function pump(){
   pumping=true;
   while(frameQ.length){
     const f=frameQ.shift();
-    try{ await handleFrame(f, frameQ.length>8); }catch(e){}
+    // Swallowing this entirely meant a persistent throw — one bad frame shape, one
+    // renamed field — turned into "no turn is ever detected" with nothing anywhere to
+    // say so. Rate-limited rather than dropped: at 31 frames a second an unguarded
+    // console.error IS the next bug.
+    try{ await handleFrame(f, frameQ.length>8); }
+    catch(e){ if(_pumpErrs++ % 100 === 0)
+                console.error(`[vad] handleFrame failed (${_pumpErrs} so far):`, e); }
   }
   pumping=false;
 }
@@ -1138,6 +1151,73 @@ function watchMicTrack(){
   };
   t.onunmute=()=>clearTimeout(_unmuteTimer);
 }
+/* ---------- the health tick -----------------------------------------------------
+ * Everything above this point is EVENT-driven: a track ends, the page is hidden, a
+ * device changes. That covers the failures the platform bothers to announce. The ones
+ * it does not announce are exactly the ones that leave a call LOOKING alive:
+ *
+ *   the laptop SLEPT        the tab was never hidden, so visibilitychange never fired.
+ *                           The context comes back suspended and the track may be dead.
+ *   the worklet STALLED     frames stop arriving while `track.readyState` stays "live",
+ *                           a known outcome of a route change. No event exists for it.
+ *   the socket is HALF-OPEN `ws.readyState` stays 1 on a dead TCP connection, the normal
+ *                           result of a Wi-Fi-to-cellular handover or an AP switch. Every
+ *                           send guard in this file trusts that 1.
+ *
+ * So once a second, while a call is up, check the three rather than wait to be told.
+ * Cheap: three comparisons and, at most, one small message every PING_EVERY_MS.
+ */
+const FRAME_STALL_MS = 2500;   // no mic frame for this long = the graph is dead, not quiet
+const PING_EVERY_MS  = 5000;   // ...and prove the socket both ways at this cadence
+const SOCKET_DEAD_MS = 15000;  // nothing at all from the server for this long = half-open
+const SLEEP_JUMP_MS  = 5000;   // a tick this late means the machine was suspended
+let _lastTick=0, _lastPing=0;
+
+function healthTick(){
+  const now=Date.now();
+  const late=_lastTick?now-_lastTick:0;
+  _lastTick=now;
+  if(!callActive) return;
+
+  // The machine was asleep. Nothing else here can be reasoned about across that gap, so
+  // verify the whole chain instead.
+  const slept = late>SLEEP_JUMP_MS;
+  if(slept) console.warn(`[health] ${(late/1000)|0}s gap — the machine slept; re-checking the call`);
+
+  // 1. the context. Resuming a running one is a no-op, so this is safe every tick and
+  //    cheaper than tracking why it stopped.
+  if(audioCtx && audioCtx.state==='suspended') audioCtx.resume().catch(()=>{});
+
+  // 2. the microphone. A stalled worklet and a dead track look identical from here, and
+  //    the repair is the same for both.
+  const t=micStream&&micStream.getAudioTracks()[0];
+  const stalled = lastFrameAt && (now-lastFrameAt)>FRAME_STALL_MS;
+  if(!micRecovering && (slept || stalled || !t || t.readyState==='ended')){
+    restartMic((!t||t.readyState==='ended') ? 'the track is gone'
+               : stalled ? `no mic frames for ${((now-lastFrameAt)/1000).toFixed(1)}s`
+               : 'the machine slept');
+    return;                                   // the rebuild resets the frame clock
+  }
+
+  // 3. the socket. Script cannot send a WebSocket PING frame, so this is an
+  //    application-level one the server answers with `pong`. ANY inbound message counts
+  //    as proof of life, so a busy call barely pings at all.
+  if(ws && ws.readyState===1){
+    if(now-_lastPing>PING_EVERY_MS){
+      _lastPing=now;
+      try{ ws.send(JSON.stringify({type:'ping'})); }catch(_){}
+    }
+    if(lastServerMsgAt && now-lastServerMsgAt>SOCKET_DEAD_MS){
+      // readyState still says OPEN and it is not. Closing it ourselves is what turns a
+      // silently dead line into the reconnect path that already works.
+      console.warn('[health] socket looks half-open — forcing a reconnect');
+      lastServerMsgAt=now;                    // don't re-fire while it tears down
+      try{ ws.close(); }catch(_){}
+    }
+  }
+}
+setInterval(healthTick, 1000);
+
 // Backgrounding. iOS suspends the AudioContext here and does not resume it on return,
 // and a wake lock is ALWAYS released when the page hides — so both have to be re-taken.
 document.addEventListener('visibilitychange', async()=>{
@@ -1189,6 +1269,10 @@ function logMicSettings(){
     for(const [k,want] of Object.entries({echoCancellation:true,noiseSuppression:false,autoGainControl:false}))
       if(k in s && s[k]!==want)
         console.warn(`[mic] asked for ${k}=${want}, the OS gave ${s[k]} — it overrode us`);
+    // Surfaced rather than only logged: with AGC on and no Silero the endpointer will
+    // misbehave, and "it keeps cutting me off" is otherwise unattributable.
+    agcOn = s.autoGainControl===true;
+    setHint();
   }catch(_){}
 }
 async function startCall(){
@@ -1228,12 +1312,22 @@ async function startCall(){
   syncControls(); setHint();
   setState(micMode==='auto'?'listening':'idle');
 }
+let _lineDown=false;            // the socket dropped mid-call and a turn was lost to it
 function setHint(){
-  let t = !callActive
+  let t = _lineDown && callActive
+    ? '<b>Connection lost</b> — reconnecting. Anything said now will not be heard.'
+    : !callActive
     ? 'Press <b>Start call</b>, then talk hands-free — or switch to <b>Hold&nbsp;Space</b>.'
     : (micMode==='auto'
         ? 'Auto mode — just speak; I detect when you start and stop. <b>Interrupt anytime.</b>'
         : 'Push-to-talk — <b>hold the Spacebar</b> to speak, release to send.');
+  // The turn detector is level-based without Silero, and AGC continuously rescales the
+  // level it is adapting to. We ask for AGC off; a phone that refuses (the bare-constraint
+  // retry, or an OS that simply overrides) leaves the caller with a VAD that will cut
+  // them off, and no way to know why. Silero is immune — it is a classifier, not a
+  // threshold — so this is only worth saying when we are on the energy path.
+  if(agcOn && !silero.ready && callActive)
+    t += ' <span style="opacity:.7">· auto-gain is on — turn detection may be unreliable</span>';
   if(vadLabel) t += ` <span style="opacity:.55">· ${vadLabel}</span>`;
   hintEl.innerHTML=t; fsHint.innerHTML=t;
 }
@@ -1290,8 +1384,31 @@ async function handleFrame(f, backlogged){
     // Adaptive floor: gate RELATIVE to this room. The old fixed 0.02 was tuned for one
     // laptop mic at one distance — a quiet speaker never opened a turn, a noisy room
     // opened one constantly, and Whisper then hallucinated on the noise.
-    const gate=Math.max(noiseFloor*4.0, 0.006)*(agentPlaying?3:1);
-    speaking = f.rms > gate;
+    // …and measured on the SPEECH BAND, not the whole signal. `vad-worklet.js` has
+    // always computed `rmsBand` through its 300-3400Hz cascade and posted it beside
+    // `rms`; this gate read `rms` and the filtered copy was thrown away every frame.
+    //
+    // scripts/bench_vad.py, on the filter as it ships (not a numpy port of it — the
+    // last reimplementation of this cascade was optimistic by 60%):
+    //
+    //     speech vs …          separation gain from band-limiting
+    //     high hiss                    8.12x
+    //     mains hum                    6.76x
+    //     broadband hiss               2.19x
+    //     fan / AC rumble              1.68x
+    //     traffic                      1.11x     <- worst case, still a gain
+    //                          mean    3.97x
+    //
+    // Traffic is the weak case for the obvious reason: it HAS energy in the speech band.
+    // Nothing regresses, so the gate moves.
+    const lvl = (f.rmsBand!=null) ? f.rmsBand : f.rms;
+    // The absolute floor has to move WITH the signal or the switch is a silent
+    // desensitisation: band-limiting takes speech itself to 0.81 of its full-band level
+    // (same bench), so 0.006 becomes 0.005. The adaptive half needs no such correction —
+    // it tracks whatever it is fed, which is why `bandFloor` is learned separately below
+    // rather than reusing `noiseFloor`.
+    const gate=Math.max(bandFloor*4.0, (f.rmsBand!=null?0.005:0.006))*(agentPlaying?3:1);
+    speaking = lvl > gate;
   }
   // Learn the room on BOTH paths. This used to live inside the else-branch, so once
   // Silero was installed — which the setup recommends — noiseFloor stayed frozen at its
@@ -1299,7 +1416,16 @@ async function handleFrame(f, backlogged){
   // drop-tiny-utterance check, both of which run whichever VAD decided, so two
   // "adaptive" thresholds were silently constants for everyone who followed the setup.
   // Silero's verdict is the better one to learn from, not the worse.
-  if(!speaking) noiseFloor = noiseFloor*0.97 + f.rms*0.03;
+  // TWO floors, deliberately. `noiseFloor` stays full-band because it is also read by
+  // the self-echo bar (against `agentLevel()`, which is full-band) and by the
+  // drop-tiny-utterance check (against a full-band peak) — feeding either of those a
+  // band-limited number would move two thresholds this bench never measured.
+  // `bandFloor` is the one the speech gate above uses, learned from the same measure it
+  // is compared against.
+  if(!speaking){
+    noiseFloor = noiseFloor*0.97 + f.rms*0.03;
+    bandFloor  = bandFloor*0.97  + ((f.rmsBand!=null)?f.rmsBand:f.rms)*0.03;
+  }
 
   // While the agent is talking, IGNORE brief noise — only barge in on SUSTAINED speech.
   if(agentPlaying){
@@ -1486,7 +1612,16 @@ function endUtterance(){
   // measured against the room's own floor rather than a fixed number
   let peak=0; for(const c of pcm){ for(let i=0;i<c.length;i++){ const a=Math.abs(c[i]); if(a>peak) peak=a; } }
   if(ms<MIN_UTT_MS || peak<Math.max(noiseFloor*6, 0.02)){ dropSpeculation(); idle(); return; }
-  if(!(ws&&ws.readyState===1)){ idle(); return; }
+  if(!(ws&&ws.readyState===1)){
+    // The line is down and the caller has just finished a sentence. This used to return
+    // to 'listening' in silence: the orb kept saying LISTENING, the turn was discarded,
+    // and the only sign was the word "reconnecting…" in a status line nobody on a phone
+    // is looking at. Say it where they are already looking, and keep saying it until the
+    // socket is back — `ws.onopen` clears it.
+    _lineDown=true; setHint();
+    setCaption('Connection lost — reconnecting. Please say that again in a moment.','sys');
+    idle(); return;
+  }
   holdForMore=false; tone=null; fillerHold=false;
   // Register the recording ONCE, here, where the turn is decided — not per send path.
   // The shortcut below never ships the audio at all (the server already has the
@@ -2311,6 +2446,10 @@ let capAI='';
 function setCaption(text, who){
   if(!text){ caption.hidden=true; caption.textContent=''; return; }
   caption.hidden=false; caption.className='caption '+(who||'');
+  // 'sys' is the page speaking, not the agent. Labelling it "AI" would put words in the
+  // receptionist's mouth — and the one thing it ever says is that the line is down,
+  // which is exactly when the caller must not think they were answered.
+  if(who==='sys'){ caption.textContent=text; return; }
   caption.innerHTML='<span class="who">'+(who==='you'?'You':'AI')+'</span>'+escapeHtml(text);
 }
 // react to the turn's outcome with an emotion: escalation → angry, booking → happy
@@ -2473,7 +2612,12 @@ function connect(pack, isReconnect){
   if(_sid) url+=`&sid=${encodeURIComponent(_sid)}`;   // resume the SAME server session on reconnect
   ws=new WebSocket(url);
   ws.binaryType='arraybuffer';                        // audio arrives as binary frames
-  ws.onopen=()=>{ _reconnectDelay=800; statusDot.classList.add('on'); statusText.textContent='ready · '+pack; };
+  ws.onopen=()=>{ _reconnectDelay=800; statusDot.classList.add('on'); statusText.textContent='ready · '+pack;
+                  // Start the liveness clock HERE. Left at 0 it stays falsy and the
+                  // half-open check never arms; set at declaration it would fire against
+                  // a socket that has not finished connecting.
+                  lastServerMsgAt=Date.now(); _lastPing=Date.now();
+                  if(_lineDown){ _lineDown=false; setHint(); } };
   // settings are applied on the 'session' message (only for a NEW session — a resumed one
   // already has the caller's language/model/voice, and re-sending would reset the latch).
   const scheduleReconnect=()=>{
@@ -2487,6 +2631,9 @@ function connect(pack, isReconnect){
   // so a deliberate hang-up is not silently reconnected into a live-looking call.
   ws.onclose=()=>{ if(_ended){ _ended=false; return; } scheduleReconnect(); };
   ws.onmessage=(ev)=>{
+    // Proof of life for the health tick, taken before anything can throw on a frame we
+    // do not understand. A message we cannot parse still proves the socket is carrying.
+    lastServerMsgAt=Date.now();
     let m, audioBuf=null;
     if(typeof ev.data==='string'){ m=JSON.parse(ev.data); }
     else{                                             // binary frame: [4B len][JSON meta][WAV]

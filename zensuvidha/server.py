@@ -428,6 +428,33 @@ SPECULATIVE_REPLY = _SPEC_CFG is True
 from . import prosody  # noqa: E402
 PROSODY = bool(cfg.get("server", {}).get("prosody", True))
 
+def is_keepalive(msg: dict) -> bool:
+    """Is this frame the browser's health-tick ping, rather than the caller doing something?
+
+    Pulled out of the receive loop so the rule can be tested directly. It decides whether
+    a call counts as ALIVE, and getting it wrong is invisible in both directions:
+
+      * too eager — a caller who TYPES the word "ping" arrives as
+        {"type":"text","text":"ping"} and would stop resetting their own idle timer,
+        so the agent asks "are you still there?" at somebody mid-conversation. This is
+        why the decision is made on the PARSED type and not on a substring of the frame.
+      * too lax — the browser pings every 5s, well inside both idle windows, so counting
+        it as presence silently disables `idle_prompt_seconds` and `idle_hangup_seconds`
+        for every browser caller. A phone left face-down on a table holds a session open
+        forever, and the feature that broke shows no symptom of its own.
+
+    Anything unparseable is NOT a keepalive: a malformed frame still came from a client
+    that is doing something, and the safe answer is to treat it as presence.
+    """
+    text = msg.get("text")
+    if text is None:
+        return False
+    try:
+        return json.loads(text).get("type") == "ping"
+    except Exception:  # noqa: BLE001
+        return False
+
+
 # Turn-taking policy lives in ONE module now (zensuvidha/turn.py) and is sent to the
 # browser on connect, so the browser, the telephony endpointer and the server all size
 # a turn the same way. Before this the phone path had its own simpler ladder and would
@@ -1421,8 +1448,19 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
 
         while True:
             msg = await sock.receive()
-            idle["since"] = time.monotonic()   # they are still with us
-            idle["prompted"] = False
+            # Anything arriving counts as the caller being present — EXCEPT a keepalive.
+            # The health tick in the browser sends one every 5s, well inside both idle
+            # windows, so counting it as presence would silently disable
+            # `idle_prompt_seconds` and `idle_hangup_seconds` for every browser caller:
+            # a phone left face-down on a table would hold a session open forever.
+            #
+            # Decided on the PARSED type, not a substring of the frame — a caller who
+            # types the word "ping" arrives as {"type":"text","text":"ping"} and would
+            # otherwise stop resetting their own idle timer. Failing to parse is not a
+            # keepalive either; the body below handles a malformed frame.
+            if not is_keepalive(msg):
+                idle["since"] = time.monotonic()   # they are still with us
+                idle["prompted"] = False
             if msg.get("type") == "websocket.disconnect":   # client closed — exit cleanly
                 await cancel_current()
                 return
@@ -1482,6 +1520,27 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                                 and session.model != getattr(_llm, "model", None)):
                             _spawn(run_in_threadpool(_llm.warmup, session.model,
                                                      session.call_messages()))
+                    elif mtype == "ping":
+                        # Liveness, both ways. A browser cannot send a WebSocket PING
+                        # frame from script and cannot see the ones uvicorn sends, so a
+                        # half-open connection — the normal result of a Wi-Fi-to-cellular
+                        # handover — leaves `ws.readyState` reading OPEN on a socket that
+                        # will never deliver anything. Every send guard in the client
+                        # trusts that value. This is the only thing that can contradict it.
+                        #
+                        # Deliberately does NOT touch the idle timers: answering a
+                        # keepalive is not the caller being present, and treating it as
+                        # presence would keep a call open forever against a phone left
+                        # face-down on a table.
+                        # Tolerant of a socket already on its way out. The client pings
+                        # every 5s, so a keepalive racing a close — an idle hang-up, a
+                        # navigation away — is routine rather than exceptional, and
+                        # letting it raise logs a full ERROR traceback on an ordinary
+                        # disconnect. Observed doing exactly that.
+                        try:
+                            await sock.send_json({"type": "pong"})
+                        except Exception:  # noqa: BLE001  (the peer is already gone)
+                            return
                     elif mtype == "cancel":         # pure barge-in signal (user started speaking)
                         spec["armed"] = False
                         spec["text"] = spec["audio"] = spec["tone"] = None
