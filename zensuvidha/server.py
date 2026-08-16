@@ -33,10 +33,11 @@ from starlette.concurrency import run_in_threadpool
 
 from .booking import list_bookings, log_turn, list_turns
 from .config import load_config
-from .guard import (GuardConfig, is_degenerate, looks_complete, looks_incomplete,
+from .guard import (GuardConfig, ends_with_filler, is_degenerate, looks_complete,
+                    looks_incomplete,
                     looks_like_echo,
                     ungrounded_numbers)
-from .llm import get_llm, OllamaError
+from .llm import get_llm, measure_concurrency, OllamaError
 from .logs import setup_logging, set_call_id, call_id_var
 from .orchestrator import _KIND_TO_SAFE, Session, extract_kind, extract_say, next_chunk
 from .packs import list_packs, load_pack
@@ -172,6 +173,16 @@ async def lifespan(app: FastAPI):
             log.info("voice coverage: every probed Indian language speaks")
     _spawn(_voice_coverage())
 
+    # Speculative reply is a straight loss on a backend that serialises — measured, it
+    # made turns 2.6x slower — and a real win on one that does not. Which of those this
+    # machine is cannot be read off the config, so ask it.
+    global SPECULATIVE_REPLY
+    if _SPEC_CFG == "auto":
+        can, why = await run_in_threadpool(
+            measure_concurrency, _llm, model=cfg["llm"]["model"])
+        SPECULATIVE_REPLY = can
+        log.info("speculative reply %s — %s", "ON" if can else "off", why)
+
     ok, info = _llm.health()
     log.info("Ready. Ollama=%s model=%s stt=%s tts=%s streaming=%s sessions<=%d",
              ok, cfg["llm"]["model"], cfg.get("stt", {}).get("provider"),
@@ -182,6 +193,16 @@ async def lifespan(app: FastAPI):
     # ---- graceful shutdown: cancel any outstanding background tasks ----
     for t in list(_bg_tasks):
         t.cancel()
+    # …and stop anything we SPAWNED. The whisper.cpp server backend runs a child process
+    # holding the model resident; `atexit` does not fire when uvicorn is stopped with
+    # SIGTERM, so the child survived the app and kept ~490MB and a port to itself.
+    # Verified by killing the server and finding it still listed in `pgrep`.
+    close = getattr(_stt, "close", None)
+    if close:
+        try:
+            await run_in_threadpool(close)
+        except Exception as e:  # noqa: BLE001
+            log.warning("could not stop the STT child cleanly: %s", e)
 
 
 app = FastAPI(title="ZenSuvidha OSS", lifespan=lifespan)
@@ -390,7 +411,29 @@ async def _dropped(sock, why: str):
 # It only pays where the model server can genuinely run concurrent requests — a GPU with
 # spare capacity, or OLLAMA_NUM_PARALLEL > 1 on hardware that can absorb it. On a laptop
 # it is a straight loss.
-SPECULATIVE_REPLY = bool(cfg.get("server", {}).get("speculative_reply", False))
+# "auto" measures whether this box can actually overlap two generations, at startup,
+# once. `True`/`False` are still honoured verbatim for anyone who has already decided.
+# Render the pack's fixed lines in the cloned voice as soon as it is cloned.
+PRERENDER_ON_CLONE = bool(cfg.get("tts", {}).get("prerender_clone", True))
+PRERENDER_BUDGET_S = float(cfg.get("tts", {}).get("prerender_budget_s", 900))
+
+_SPEC_CFG = cfg.get("server", {}).get("speculative_reply", "auto")
+SPECULATIVE_REPLY = _SPEC_CFG is True
+
+# Read the caller's pitch contour to tell "finished" from "paused mid-thought". Advisory:
+# it scales the endpoint window and never decides a turn, and it returns "unsure" — which
+# changes nothing — whenever it is not well clear. See zensuvidha/prosody.py for the
+# measurements, including the two clips whose pitch slopes are identical and whose
+# answers are opposite.
+from . import prosody  # noqa: E402
+PROSODY = bool(cfg.get("server", {}).get("prosody", True))
+
+# Turn-taking policy lives in ONE module now (zensuvidha/turn.py) and is sent to the
+# browser on connect, so the browser, the telephony endpointer and the server all size
+# a turn the same way. Before this the phone path had its own simpler ladder and would
+# have endpointed callers by rules two rounds of live testing had already tuned away.
+from . import turn as _turn  # noqa: E402
+TURN_POLICY = _turn.policy(cfg.get("server", {}).get("turn_eagerness"))
 
 
 def _void_speculation(spec: dict) -> None:
@@ -405,6 +448,11 @@ def _void_speculation(spec: dict) -> None:
         t.cancel()
     spec["gen"] = None
     spec["gen_for"] = None
+    # NOT spec["audio"]. This helper voids the generated REPLY, and it is called from
+    # inside the speculative branch itself, immediately after a fresh guess is stored —
+    # clearing the audio here would empty it before every commit could ever use it, and
+    # the speaker gate would silently go back to never running. The audio belongs with
+    # spec["text"] and is cleared wherever that is.
 
 
 async def _speculate_reply(session, guess: str) -> str:
@@ -572,9 +620,24 @@ _ADMIN_TOKEN = (cfg.get("server", {}) or {}).get("admin_token") or None
 
 
 def _authorised(request: Request) -> bool:
+    """Who may read caller PII — names, phone numbers, whole call transcripts.
+
+    "Came from 127.0.0.1" means "is the operator" only while nothing else is forwarding
+    requests to us. Put any reverse proxy on the same box — nginx, Caddy, an ngrok
+    tunnel, `kubectl port-forward` — and EVERY request in the world arrives with
+    `client.host == 127.0.0.1`. The check that was meant to say "you are sitting at this
+    machine" then says "you reached this machine", which is not the same sentence, and
+    /transcripts starts serving callers' phone numbers to the internet.
+
+    A forwarding header is the tell. It is trivially forgeable, which is exactly why it
+    is used HERE and only here: we are not trusting it to grant access, we are treating
+    its presence as proof that this request was relayed and therefore is NOT local.
+    """
     host = (request.client.host if request.client else "") or ""
-    if host in ("127.0.0.1", "::1", "localhost"):
-        return True                                   # a local operator, as before
+    relayed = any(request.headers.get(h) for h in
+                  ("x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host"))
+    if host in ("127.0.0.1", "::1", "localhost") and not relayed:
+        return True                                   # genuinely a local operator
     if not _ADMIN_TOKEN:
         return False                                  # remote + no token configured = no
     sent = request.headers.get("x-admin-token") or request.query_params.get("token")
@@ -675,7 +738,41 @@ async def voice_clone(request: Request):
             return JSONResponse({"error": "Cloning failed — please try a cleaner recording."}, status_code=500)
         _brand["tts"] = clone
     log.info("brand voice cloned from %.1fs of cleaned reference", dur)
+
+    # Now say everything that is written down, once, in that voice — in the BACKGROUND.
+    # Cloning is seconds per sentence on a CPU, so it can never sit on a turn; but the
+    # greeting, every slot question, every refusal and the pack's quoted answers are the
+    # same text on every call, and rendering them here puts the owner's voice on the
+    # majority of a call at no runtime cost at all.
+    #
+    # Not awaited: the operator has just recorded 15 seconds and wants to hear the
+    # sample back, not wait out a few hundred syntheses. Every line that is not ready
+    # yet simply misses the cache and is spoken by the live synthesiser, exactly as
+    # before — so a call placed mid-render works, it just has fewer cloned lines.
+    if PRERENDER_ON_CLONE:
+        _spawn(_prerender_brand(pack_for_prerender()))
     return {"ok": True, "text": sample, "audio": _b64(audio)}
+
+
+def pack_for_prerender():
+    return load_pack(cfg.get("default_pack", "clinic"))
+
+
+async def _prerender_brand(pack):
+    from .prerender import prerender
+    clone = _brand.get("tts")
+    if clone is None:
+        return
+    try:
+        stats = await run_in_threadpool(prerender, clone, pack,
+                                        budget_s=PRERENDER_BUDGET_S, stt=_stt)
+        _brand["prerender"] = stats
+        held = getattr(clone, "pinned_bytes", lambda: 0)()
+        log.info("brand voice pre-rendered: %d/%d lines, %.1fMB held, %.0fs",
+                 stats["rendered"], stats["total"], held / 1e6, stats["seconds"])
+    except Exception as e:  # noqa: BLE001
+        # A failed pre-render costs the owner's voice on fixed lines and nothing else.
+        log.warning("pre-render did not finish (%s) — the live voice still works", e)
 
 
 @app.get("/health")
@@ -1218,6 +1315,11 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
         # if the committed transcript is IDENTICAL — a reply to a sentence the caller
         # had not finished is worse than waiting for the one they did.
         "gen": None, "gen_for": None,
+        # The audio the guess was transcribed from, kept so that a commit which ADOPTS
+        # the guess can still put it through the speaker gate. Without this the whole
+        # turn skips the gate — see the commit handler. Bounded by MAX_UTT_MS on the
+        # client, and replaced on every new guess.
+        "audio": None, "speakers": None, "tone": None, "filler": False,
         # the next frame is a latched salvage — see the stt_hint handler
         "latched": False}
 
@@ -1250,7 +1352,13 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
         # (before/while it's sent) exits quietly instead of logging a traceback.
         await sock.send_json({"type": "session", "sid": sid, "resumed": resumed,
                               "denoise_available": bool(getattr(_stt, "denoiser", None)),
-                              "isolate_available": bool(_diarizer and _speaker_gate)})
+                              "isolate_available": bool(_diarizer and _speaker_gate),
+                              # The turn-taking ladder, sent rather than duplicated. The
+                              # browser evaluates these numbers; it no longer owns them,
+                              # so a change in zensuvidha/turn.py reaches the browser and
+                              # the phone path in the same commit.
+                              "turn": getattr(session, "turn_policy", None)
+                                      or TURN_POLICY})
         await sock.send_json({"type": "voiceinfo", "voice": session.voice})
         if not resumed:                     # a resumed call already has its history — don't re-greet
             await _send_greeting(sock, session, pack_name)
@@ -1283,6 +1391,17 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                         await _send_audio(sock, {"type": "reply", "text": line, "heard": "",
                                                  "action": {"type": "none"},
                                                  "timings": {}}, audio, session=session)
+                        # SAY that the call is over, before dropping the socket. The
+                        # client treats any close as a network blip and reconnects
+                        # silently — so a deliberate hang-up looked exactly like a
+                        # glitch: the agent said goodbye, the socket reopened, the mic
+                        # stayed live, and the caller went on talking to a call that had
+                        # already ended. Nothing on screen said otherwise.
+                        try:
+                            await sock.send_json({"type": "call_ended", "reason": "idle",
+                                                  "text": line})
+                        except Exception:  # noqa: BLE001  (the peer may already be gone)
+                            pass
                         await asyncio.sleep(2.5)      # let it actually play
                         await sock.close()
                         return
@@ -1365,7 +1484,8 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                                                      session.call_messages()))
                     elif mtype == "cancel":         # pure barge-in signal (user started speaking)
                         spec["armed"] = False
-                        spec["text"] = None
+                        spec["text"] = spec["audio"] = spec["tone"] = None
+                        spec["filler"] = False
                         _void_speculation(spec)
                         await cancel_current()
                     elif mtype == "stt_hint":
@@ -1383,18 +1503,50 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                             # and asked to repeat, into the same noise. Isolation exists
                             # to pull one voice out of exactly that.
                             spec["armed"] = False
-                            spec["text"] = None
+                            spec["text"] = spec["audio"] = spec["tone"] = None
+                            spec["filler"] = False
                             spec["latched"] = True
                             _void_speculation(spec)
                         else:
                             spec["armed"] = False
-                            spec["text"] = None
+                            spec["text"] = spec["audio"] = spec["tone"] = None
+                            spec["filler"] = False
                             _void_speculation(spec)
                     elif mtype == "commit":
                         # Endpoint confirmed. If a speculative transcript is waiting, the
                         # turn starts with ZERO STT on the clock.
                         text, spec["text"], spec["armed"] = spec["text"], None, False
                         unfinished = spec.pop("incomplete", False)
+                        # WHOSE VOICE WAS THAT? The gate deliberately does not run on a
+                        # speculative frame — enrolling from a 450ms fragment once locked
+                        # a caller out of their own call. But a commit ADOPTS the guess
+                        # and answers it, and the client does not resend the recording,
+                        # so nothing downstream ever judged the voice: every turn taken
+                        # by this shortcut bypassed the speaker gate completely. The
+                        # guess is not a guess any more at this point, which is exactly
+                        # when it becomes safe — and necessary — to judge it.
+                        gate_audio, spec["audio"] = spec["audio"], None
+                        if text and gate_audio is not None:
+                            same, sim = await run_in_threadpool(
+                                session.check_speaker, gate_audio, spec.get("speakers"),
+                                text, True)
+                            if not same:
+                                log.info("commit ignored: different speaker (sim=%.2f)",
+                                         sim if sim is not None else -1)
+                                _void_speculation(spec)
+                                await sock.send_json({
+                                    "type": "audio_insight", "speculative": False,
+                                    "accepted": False, "similarity": sim, "heard": text,
+                                    "tone": spec.get("tone"),
+                                    "enrolled": session.voiceprint is not None})
+                                await _dropped(sock, "different speaker")
+                                continue
+                            rescued, session._last_rescue = session._last_rescue, None
+                            await sock.send_json({
+                                "type": "audio_insight", "speculative": False,
+                                "accepted": True, "similarity": sim, "heard": text,
+                                "rescued": rescued, "tone": spec.get("tone"),
+                                "enrolled": session.voiceprint is not None})
                         # Only nudge when we have something too SHORT to act on. A long
                         # transcript that merely trails off ("...my number, I will give you
                         # later, list me out all the...") is a truncated sentence, not a
@@ -1474,6 +1626,16 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                             log.info("commit: no speculative transcript — asking the "
                                      "client to send the recording")
                             await sock.send_json({"type": "commit_miss"})
+                    elif mtype == "eagerness":
+                        # Per-call, so an operator can try all three on one line without
+                        # a restart. Echoed back as the whole policy rather than a name:
+                        # the browser evaluates numbers it is given and does not own them.
+                        pol = _turn.policy(msg.get("value"))
+                        session.turn_policy = pol
+                        await sock.send_json({"type": "session", "sid": sid,
+                                              "resumed": True, "turn": pol})
+                        log.info("turn eagerness set to %s (%d-%dms)",
+                                 pol["eagerness"], pol["base_ms"], pol["max_ms"])
                     elif mtype == "switch":
                         await cancel_current()
                         pack_name = data.get("pack", pack_name)
@@ -1569,7 +1731,8 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                     audio, dia = await run_in_threadpool(session.clean_audio, raw)
                     heard = ""
                     try:
-                        heard = await run_in_threadpool(session.transcribe, audio)
+                        heard = await run_in_threadpool(
+                            session.transcribe, audio, speculative)
                     except Exception as e:  # noqa: BLE001  (bad/short/garbled audio)
                         log.warning("STT decode failed (%s bytes): %s", len(audio), e)
                     # Tell the UI what each filtering stage actually did, so the
@@ -1593,8 +1756,17 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                             "kept_s": d.get("kept_s") or 0.0,
                             "total_s": d.get("total_s") or 0.0,
                             "dia_reason": d.get("reason"),
+                            # The boundaries the diarizer found and the ranges that
+                            # survived them, in the timeline of the clip the CALLER
+                            # recorded — so the browser can shade its own copy of the
+                            # audio instead of us shipping it back over the socket.
+                            "segments": d.get("segments"),
+                            "kept_spans": d.get("kept_spans"),
                             "filter_ms": round(d.get("iso_ms", 0.0) + d.get("den_ms", 0.0)),
                             "enrolled": session.voiceprint is not None,
+                            # what the caller's pitch said about this turn ending —
+                            # a signal that moves the window must be visible
+                            "tone": spec.get("tone"),
                             **kw})
 
                     # Whose voice was that? The first speaker on the call is enrolled;
@@ -1616,7 +1788,8 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                                      sim if sim is not None else -1,
                                      heard[:40] if LOG_TRANSCRIPTS else f"<{len(heard)} chars>")
                             await _insight(accepted=False, similarity=sim, heard=heard)
-                            spec["text"] = None
+                            spec["text"] = spec["audio"] = spec["tone"] = None
+                            spec["filler"] = False
                             await _dropped(sock, "different speaker")
                             continue
                         # `rescued` is set only when the gate refused on the audio and the
@@ -1633,6 +1806,11 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                         # COMPLETE words, so a half-spoken phone number must never
                         # start a turn. The client gets it only to show live text.
                         spec["text"] = heard
+                        # Keep the audio with the guess. A commit that adopts this
+                        # transcript never sends the recording again, so this is the
+                        # only copy the server will ever have to judge the voice from.
+                        spec["audio"] = audio
+                        spec["speakers"] = (dia or {}).get("speakers")
                         # Now that there are WORDS, we can do better than counting
                         # silence: "मेरा मोबाइल नंबर" is a finished noun phrase and an
                         # unfinished sentence. Tell the client to keep listening.
@@ -1646,13 +1824,42 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                         # that is already done is most of what makes a call feel slow.
                         spec["settled"] = bool(heard) and looks_complete(
                             heard, expect_phone=want_phone)
-                        log.info("spec STT: %s bytes → heard=%r%s", len(raw),
+                        # "…with, um" — searching for a word, not finished. Silence
+                        # cannot tell that apart from a finished sentence; the words can.
+                        spec["filler"] = bool(heard) and ends_with_filler(heard)
+                        # …and a third signal, from the VOICE rather than the words.
+                        # The words cannot tell a finished sentence from a caller who
+                        # paused after a grammatically complete clause; the pitch
+                        # contour can, because a speaker's pitch and energy fall
+                        # together through the end of an utterance and are held when
+                        # they mean to carry on. Advisory only — it scales the window,
+                        # it never decides — and it declines to answer whenever it is
+                        # not well clear. ~1.6ms of work on a 0.17ms decode.
+                        #
+                        # Deliberately on `audio`, i.e. AFTER the pipeline: if isolation
+                        # removed a second voice, the end of this clip is the end of the
+                        # CALLER's last segment, which is the contour we want to read.
+                        # On the raw clip a stranger's trailing word would be the thing
+                        # measured, and it would be measured as the caller finishing.
+                        tone = None
+                        if PROSODY and heard:
+                            try:
+                                pcm = await run_in_threadpool(session.stt._decode, audio)
+                                tone = await run_in_threadpool(prosody.finality, pcm)
+                            except Exception as e:  # noqa: BLE001
+                                log.debug("prosody skipped (%s)", e)
+                        spec["tone"] = (tone or {}).get("verdict")
+                        log.info("spec STT: %s bytes → heard=%r%s%s", len(raw),
                                  heard if LOG_TRANSCRIPTS else f"<{len(heard)} chars>",
-                                 " [sounds unfinished]" if spec["incomplete"] else "")
+                                 " [sounds unfinished]" if spec["incomplete"] else "",
+                                 " [voice: %s]" % tone["verdict"] if tone else "")
                         if heard:
                             await sock.send_json({"type": "partial", "text": heard,
                                                   "complete": not spec["incomplete"],
+                                                  # "finished" | "holding" | "unsure"
+                                                  "tone": (tone or {}).get("verdict"),
                                                   "settled": spec["settled"],
+                                                  "filler": spec.get("filler", False),
                                                   # what we ASKED for. People pause
                                                   # differently mid-phone-number than
                                                   # mid-sentence, and the window has
@@ -1671,7 +1878,9 @@ async def ws(sock: WebSocket, pack: str = Query(None), sid: str = Query(None)):
                             spec["gen"] = asyncio.create_task(
                                 _speculate_reply(session, heard))
                         continue
-                    spec["text"] = None            # a full frame supersedes any guess
+                    # a full frame supersedes any guess, and its audio with it
+                    spec["text"] = spec["audio"] = spec["tone"] = None
+                    spec["filler"] = False
                     if heard:
                         spec["asked_repeat"] = False   # they got through — arm it again
                     # log_transcripts:false exists precisely so caller words stay OUT of

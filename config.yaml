@@ -253,10 +253,46 @@ server:
   max_sessions: 6            # MEASURED on this CPU (M1 Pro, qwen3:4b via Ollama/Metal):
 
   # --- naturalness & telephony (all measured; see docs/EXPLAINED.md) ----------
+  turn_eagerness: normal     # eager | normal | patient — how long to wait before
+                             #   deciding the caller has finished. It SCALES the ladder
+                             #   in zensuvidha/turn.py rather than replacing it, so every
+                             #   measured rule still holds; only the patience changes.
+                             #     eager   0.70x window — a restaurant taking table
+                             #             numbers, callers who answer in one word
+                             #     normal  1.00x        — the tuned default
+                             #     patient 1.45x        — elderly or unwell callers,
+                             #             a noisy shop, anyone who thinks mid-sentence
+                             #   `settled` is NOT scaled: "the words are finished and
+                             #   nothing can follow" is a fact about the transcript, not
+                             #   a preference, and making a completed phone number wait
+                             #   longer is just a slower call.
+                             #   The policy is SENT to the browser on connect, so the
+                             #   browser, the phone endpointer and the server all size a
+                             #   turn identically — they used to have three copies.
+  prosody: true              # read the caller's PITCH to tell "finished" from "paused
+                             #   mid-thought". The third turn-taking signal, behind
+                             #   silence and behind the words, and the only one that
+                             #   listens to the voice rather than counting or reading.
+                             #   MEASURED: pitch slope alone cannot do it — the same
+                             #   sentence finished and cut after three words gave -6.6
+                             #   and -6.7 semitones/sec. Combined with energy decay it
+                             #   separates, but only by 8.1 vs 7.0, so there is a DEAD
+                             #   BAND: it answers "unsure" (which changes nothing)
+                             #   unless it is well clear. On the 9-clip calibration set
+                             #   it acted on 4 and was wrong on 0. ~1.6ms per turn.
+                             #   Advisory: it scales the endpoint window by 0.80/1.25
+                             #   and never decides a turn. `looks_incomplete` always
+                             #   wins — "my mobile number is" said with a perfect
+                             #   falling contour has still not given us the number.
   backchannel: true          # a quiet "mm-hm" at a pause on a long turn, so the agent
                              #   is not silent and then abruptly speaking. Once per
                              #   turn, ducked, never over a word.
-  speculative_reply: false   # MEASURED OFF. On one local Ollama the real turn goes
+  speculative_reply: auto    # auto | true | false. AUTO probes this machine at
+                             #   startup: one short generation, then two together.
+                             #   If the pair takes under 1.5x the single they truly
+                             #   overlap and it switches ON; if they serialise it
+                             #   stays off and says so in the log.
+                             # MEASURED OFF on one local Ollama: the real turn goes
                              #   2339ms -> 6044ms, because requests are serialised per
                              #   model and the real generation queues BEHIND the guess.
                              #   Only enable where the server can truly run concurrent

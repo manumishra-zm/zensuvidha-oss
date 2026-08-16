@@ -5,6 +5,8 @@ already transport-agnostic. What was missing was somewhere for a second transpor
 plug in without touching them, and a place to put the things a browser supplies for free
 and a phone line does not: echo handling, voice activity, and endpointing.
 """
+import asyncio
+
 import numpy as np
 import pytest
 
@@ -85,7 +87,11 @@ def test_a_long_utterance_gets_the_longer_window():
         if ep.feed(frame) is not None and closed_at is None:
             closed_at = fed
     assert closed_at is not None
-    assert closed_at > 1800 + T.Endpointer.SHORT_MS, (
+    # The ladder now comes from zensuvidha/turn.py, shared with the browser — this
+    # class used to carry its own copy, which had drifted to a flat 800/1200ms with no
+    # learned pause and no per-slot extra.
+    from zensuvidha import turn as _turn
+    assert closed_at > 1800 + _turn.NORMAL["base_ms"], (
         "a long utterance was cut on the short window")
 
 
@@ -206,3 +212,150 @@ def test_no_stdlib_audioop_dependency():
     the future; it must not be the first thing to break on a modern interpreter."""
     import inspect
     assert "import audioop" not in inspect.getsource(T)
+
+
+# ── LiveKit ───────────────────────────────────────────────────────────────────
+# Adopted for TRANSPORT only, on the same reasoning as Pipecat. What makes LiveKit
+# worth having at all is that its server is Apache-2.0 and self-hostable, which the
+# offline premise requires — and what makes it only a transport is that the one
+# feature overlapping this codebase (background voice cancellation) is a Krisp model
+# available exclusively through LiveKit Cloud.
+
+class _FakeFrame:
+    def __init__(self, pcm, sr=48000, ch=1):
+        import numpy as np
+        self.data = (np.clip(pcm, -1, 1) * 32767).astype("<i2").tobytes()
+        self.sample_rate, self.num_channels = sr, ch
+        self.samples_per_channel = len(pcm) // ch
+
+
+class _FakeEvent:
+    def __init__(self, frame):
+        self.frame = frame
+
+
+class _FakeStream:
+    def __init__(self, events):
+        self._events = list(events)
+
+    def __aiter__(self):
+        async def gen():
+            for e in self._events:
+                yield e
+        return gen()
+
+
+class _FakeSource:
+    def __init__(self):
+        self.frames = []
+
+    async def capture_frame(self, frame):
+        self.frames.append(frame)
+
+
+def _lk(stream, source=None, room=None):
+    return T.LiveKitTransport(stream, audio_source=source, room=room, require_sdk=False)
+
+
+def test_livekit_constructing_without_the_sdk_says_what_to_install():
+    try:
+        import livekit.rtc  # noqa: F401
+        pytest.skip("the livekit sdk is installed here")
+    except ImportError:
+        pass
+    with pytest.raises(ImportError) as e:
+        T.LiveKitTransport(audio_stream=None)
+    assert "pip install livekit" in str(e.value)
+
+
+def test_livekit_meets_the_same_four_method_contract():
+    required = {"recv_audio", "send_audio", "send_text", "hangup"}
+    assert required <= set(dir(T.LiveKitTransport))
+
+
+def test_livekit_is_used_for_transport_only():
+    """Its turn detector, its noise cancellation and its agent loop are deliberately
+    not wired in — the first is SDK-bound and has no Telugu, the second is Cloud-only
+    and denoising is already measured to hurt recognition here."""
+    import inspect
+    # The class docstring NAMES these, because saying why each was rejected is the
+    # point of it. So check the code, not the prose — otherwise the only way to pass
+    # is to stop explaining the decision.
+    src = inspect.getsource(T.LiveKitTransport)
+    # __doc__, not getdoc(): getdoc dedents, so it no longer matches the source text
+    # and the strip silently does nothing — which is how this test first "passed".
+    code = src.replace(T.LiveKitTransport.__doc__ or "", "")
+    assert "Krisp" not in code, "the docstring was not actually stripped"
+    for service in ("noise_cancellation", "turn_detector", "AgentSession",
+                    "STTService", "LLMService", "TTSService", "Krisp"):
+        assert service not in code, f"{service} leaked into the transport adapter"
+
+
+def test_livekit_frames_arrive_as_16k_utterances():
+    """WebRTC is 48k and everything above the seam is 16k. Getting this wrong does not
+    raise — it hands Whisper audio at three times the speed, which transcribes as
+    nonsense rather than as an error."""
+    import numpy as np
+    sr = 48000
+    speech = (np.sin(2 * np.pi * 180 * np.arange(int(1.2 * sr)) / sr) * 0.5).astype("float32")
+    silence = np.zeros(int(1.5 * sr), dtype="float32")
+    tp = _lk(_FakeStream([_FakeEvent(_FakeFrame(speech, sr)),
+                          _FakeEvent(_FakeFrame(silence, sr))]))
+
+    async def go():
+        return [u async for u in tp.recv_audio()]
+    utts = asyncio.run(go())
+    assert utts, "no utterance was produced"
+    # 2.7s went in (1.2 speech + 1.5 trailing silence, which the endpointer keeps up to
+    # its window). At 16k that is ~43k samples; had the resample been skipped it would
+    # be ~130k. The point of the bound is to tell those two apart.
+    assert 0.9 * 16000 <= len(utts[0]) <= 3.0 * 16000, len(utts[0])
+
+def test_livekit_stereo_is_mixed_down_rather_than_interleaved():
+    """Two channels read as one array is a signal at double speed with a comb filter
+    on it. Silent, and fatal to both the transcript and the voiceprint."""
+    import numpy as np
+    n = 16000
+    left = np.full(n, 0.5, dtype="float32")
+    stereo = np.empty(n * 2, dtype="float32")
+    stereo[0::2], stereo[1::2] = left, -left           # perfectly out of phase
+    pcm, sr = T.LiveKitTransport._frame_pcm(_FakeEvent(_FakeFrame(stereo, 48000, ch=2)))
+    assert sr == 48000
+    assert len(pcm) == n, "channels were not mixed down"
+    assert abs(float(np.max(np.abs(pcm)))) < 0.01, "the mix-down is not averaging"
+
+
+def test_livekit_output_is_resampled_back_up():
+    import numpy as np
+    src = _FakeSource()
+    tp = _lk(_FakeStream([]), source=src)
+    asyncio.run(tp.send_audio(np.zeros(16000, dtype="float32")))
+    assert src.frames, "nothing was played"
+    assert len(src.frames[0]) == 48000 * 2, "output was not resampled 16k -> 48k"
+
+def test_livekit_a_failed_transcript_never_takes_the_call_down():
+    class _BadParticipant:
+        async def publish_data(self, *a, **k):
+            raise RuntimeError("data channel closed")
+
+    class _Room:
+        local_participant = _BadParticipant()
+
+    tp = _lk(_FakeStream([]), room=_Room())
+    asyncio.run(tp.send_text("your appointment is confirmed"))   # must not raise
+
+
+def test_livekit_hangup_closes_what_it_can_and_survives_what_it_cannot():
+    closed = []
+
+    class _Room:
+        async def disconnect(self):
+            closed.append("room")
+
+    class _BadStream(_FakeStream):
+        async def aclose(self):
+            raise RuntimeError("already gone")
+
+    tp = _lk(_BadStream([]), room=_Room())
+    asyncio.run(tp.hangup())
+    assert closed == ["room"], "one failing close stopped the other"

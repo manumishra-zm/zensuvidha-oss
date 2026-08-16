@@ -156,18 +156,25 @@ class Endpointer:
     gives you an unbroken stream, so somebody has to decide where a turn ends — and if
     that somebody is not here, it is the LLM, which will happily answer half a sentence.
 
-    Deliberately the SAME shape as the browser's rule rather than a new invention: a
-    short answer closes fast, an utterance long enough to have a middle waits longer,
-    because that is where people stop to find a word. The browser learned those numbers
-    from real callers being cut off; re-deriving them here would be throwing that away.
+    It now uses the SAME ladder as the browser, from zensuvidha/turn.py, rather than a
+    copy of its shape. That distinction mattered: this class had drifted to a flat
+    800/1200ms with no learned pause, no per-slot extra and no prosody, so a caller on a
+    phone line would have been endpointed by exactly the rules two rounds of live
+    testing tuned away from ("it breaks my long sentences"). Same policy object, same
+    eagerness setting, one place to change it.
+
+    What a carrier still cannot give us is the LEXICAL and PROSODIC half — those need a
+    transcript and a pitch read, which happen after this. So `learned_pause_ms` and
+    `hold`/`tone` are accepted here and left for the caller to supply once it has them.
     """
 
-    SHORT_MS = 800          # a one-word answer is finished the moment it stops
-    LONG_MS = 1200          # …once it is long enough to HAVE a middle
-    LONG_UTT_MS = 1500
     MAX_UTT_MS = 30000      # steady noise must not latch this open forever
 
-    def __init__(self, sr: int = SR, is_speech=None):
+    def __init__(self, sr: int = SR, is_speech=None, policy=None, eagerness=None):
+        from . import turn as _turn
+        self.policy = policy or _turn.policy(eagerness)
+        self._turn = _turn
+        self.learned_pause_ms = 0.0
         self.sr = sr
         self._is_speech = is_speech or self._energy_gate
         self._buf = []
@@ -202,7 +209,8 @@ class Endpointer:
         self._utt_ms += ms
         self._silence_ms = 0.0 if speech else self._silence_ms + ms
 
-        window = self.SHORT_MS if self._utt_ms < self.LONG_UTT_MS else self.LONG_MS
+        window = self._turn.window_ms(self.policy, utt_ms=self._utt_ms,
+                                      learned_pause_ms=self.learned_pause_ms)
         if self._silence_ms >= window or self._utt_ms >= self.MAX_UTT_MS:
             return self.flush()
         return None
@@ -271,6 +279,137 @@ class PipecatTransport:
         close = getattr(self.stream, "close", None)
         if close:
             await close()
+
+
+class LiveKitTransport:
+    """Transport-only adapter for LiveKit (WebRTC in, SIP trunk to a phone number).
+
+    Evaluated the same way Pipecat was, and the answer has the same shape: take the
+    transport, leave the audio decisions here.
+
+    WHAT LIVEKIT WOULD ACTUALLY GIVE US
+      * A WebRTC transport that is not a raw WebSocket of WAV blobs: jitter buffering,
+        packet-loss concealment and Opus, none of which this project has. On a real
+        network that is the difference between a dropped word and a recovered one.
+      * SIP, so the same agent answers an actual phone number.
+      * A server that is Apache-2.0 and SELF-HOSTABLE, which is the only reason this is
+        considered at all — the premise here is that everything runs on your own box.
+
+    WHAT IT WOULD NOT
+      * Its enhanced noise cancellation and background voice cancellation are Krisp
+        models available only through LiveKit Cloud, and the self-hosting instructions
+        say to remove that plugin. So the ONE feature that overlaps what this codebase
+        spent most of its effort on is exactly the feature you cannot self-host. And on
+        the recognition path we have already measured that denoising HURTS (DeepFilter
+        won 1 of 30 SNR cells, net -400% word recall), so it is not a loss worth
+        taking a cloud dependency for.
+      * Its turn detector is a genuinely interesting model — but it is bound to the
+        `livekit-agents` session object, ships under the LiveKit Model License rather
+        than an OSI one, and covers 14 languages: Hindi yes, Telugu no. Our endpointer
+        learns per caller and `guard.looks_incomplete()` reads the words; adopting
+        theirs would mean restructuring into their agent loop to get a model that
+        cannot serve the languages the GPU work is for.
+
+    So: transport only, and everything above this seam — isolation, the speaker gate,
+    the router, the grounding guard — stays exactly as it is.
+
+    `audio_stream` is any async iterable of LiveKit audio frames (what `rtc.AudioStream`
+    yields); `audio_source` is an `rtc.AudioSource` to play into; `room` is optional and
+    used only for text and hangup. They are passed in rather than constructed here so
+    the seam can be tested without the SDK, and so connecting a room stays the caller's
+    business.
+    """
+
+    def __init__(self, audio_stream, audio_source=None, room=None,
+                 sr: int = 48000, require_sdk: bool = True):
+        if require_sdk:
+            try:
+                import livekit.rtc  # noqa: F401
+            except ImportError as e:  # pragma: no cover - depends on the environment
+                raise ImportError(
+                    "LiveKitTransport needs the optional dependency: "
+                    "pip install livekit\n"
+                    "It is not in requirements.txt because the browser path does not "
+                    "use it. Note that the noise-cancellation plugin is LiveKit Cloud "
+                    "only and is deliberately not used here."
+                ) from e
+        self.stream = audio_stream
+        self.source = audio_source
+        self.room = room
+        self.sr = sr                     # WebRTC is 48k; everything above here is 16k
+        self.endpointer = Endpointer(sr=SR)
+        self._open = True
+
+    @staticmethod
+    def _frame_pcm(event):
+        """LiveKit hands you a frame event; the frame holds int16 samples.
+
+        Written defensively about the wrapper because the SDK has moved this around
+        (`event.frame` vs the frame itself), and getting it wrong yields silence rather
+        than an error — the failure mode this project keeps meeting.
+        """
+        import numpy as np
+        frame = getattr(event, "frame", event)
+        data = getattr(frame, "data", None)
+        if data is None:
+            return np.zeros(0, dtype="float32"), None
+        arr = np.frombuffer(bytes(data), dtype="<i2").astype("float32") / 32768.0
+        ch = int(getattr(frame, "num_channels", 1) or 1)
+        if ch > 1:
+            arr = arr.reshape(-1, ch).mean(axis=1)
+        return arr, getattr(frame, "sample_rate", None)
+
+    async def recv_audio(self):
+        async for event in self.stream:
+            if not self._open:
+                return
+            pcm, sr = self._frame_pcm(event)
+            if not pcm.size:
+                continue
+            utt = self.endpointer.feed(resample(pcm, sr or self.sr, SR))
+            if utt is not None:
+                yield utt
+        tail = self.endpointer.flush()
+        if tail is not None:
+            yield tail
+
+    async def send_audio(self, pcm) -> None:
+        if self.source is None:
+            return
+        import numpy as np
+        out = resample(pcm, SR, self.sr)
+        pcm16 = np.clip(out, -1.0, 1.0)
+        pcm16 = (pcm16 * 32767.0).astype("<i2")
+        try:
+            from livekit import rtc
+            frame = rtc.AudioFrame(data=pcm16.tobytes(), sample_rate=self.sr,
+                                   num_channels=1, samples_per_channel=len(pcm16))
+        except ImportError:      # pragma: no cover - the stubbed path used by tests
+            frame = pcm16.tobytes()
+        await self.source.capture_frame(frame)
+
+    async def send_text(self, text: str, role: str = "assistant") -> None:
+        # LiveKit has a data channel, so unlike a phone line there IS somewhere to put
+        # this. Failing to deliver a transcript must never take the call down with it.
+        lp = getattr(self.room, "local_participant", None) if self.room else None
+        if lp is None:
+            log.info("[%s] %s", role, text)
+            return
+        try:
+            await lp.publish_data(text.encode("utf-8"), topic=role)
+        except Exception as e:  # noqa: BLE001
+            log.warning("livekit: could not publish the transcript (%s)", e)
+
+    async def hangup(self) -> None:
+        self._open = False
+        for obj in (self.stream, self.room):
+            close = getattr(obj, "aclose", None) or getattr(obj, "disconnect", None)
+            if close:
+                try:
+                    await close()
+                except Exception as e:  # noqa: BLE001
+                    log.warning("livekit: hangup on %s failed (%s)",
+                                type(obj).__name__, e)
 
 
 def _pcm16(data: bytes):

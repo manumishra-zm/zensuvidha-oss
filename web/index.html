@@ -107,6 +107,94 @@
   .insp-txt{color:var(--muted);margin-top:4px;line-height:1.35;}
   @media (prefers-color-scheme:dark){ .t-keep{color:#5cd75c;} .t-drop{color:#ea7a7a;} .t-resc{color:#e0b350;} }
   #dfBtn[disabled]{opacity:.4;cursor:not-allowed;}
+
+  /* ---------- full-page audio inspector -------------------------------------
+     The docked pane has room for a verdict and a ratio bar, which answers "was
+     anything removed?" but never "removed from WHERE?". That question is about a
+     position in time, so it needs the recording drawn at a size you can actually
+     point at. Same data, given the space to be examined rather than glanced at. */
+  .ifs{position:fixed;inset:0;z-index:70;display:flex;flex-direction:column;
+    background:var(--bg);animation:fsIn .18s ease;}
+  /* An author `display:flex` BEATS the browser's own [hidden]{display:none}, so the
+     hidden attribute stops working the moment a class sets display. Without this the
+     panel is visible from page load — covering the whole app before anybody clicks
+     anything — and the Close button appears to do nothing, because setting .hidden
+     changes an attribute no rule is listening to. `.voice-fs[hidden]` two hundred
+     lines below exists for exactly this reason; this one was missing. */
+  .ifs[hidden]{display:none;}
+  .ifs-head{display:flex;align-items:center;justify-content:space-between;gap:14px;
+    padding:14px 18px;border-bottom:1px solid var(--line);background:var(--card);}
+  .ifs-title{font-size:14px;font-weight:600;letter-spacing:-.01em;}
+  .ifs-sub{font-size:11.5px;color:var(--muted);margin-top:2px;
+    font-family:ui-monospace,Menlo,monospace;}
+  .ifs-body{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:260px 1fr;}
+  .ifs-list{border-right:1px solid var(--line);overflow-y:auto;padding:10px;
+    display:flex;flex-direction:column;gap:6px;background:var(--card);}
+  .ifs-list:empty::after{content:attr(data-empty);display:block;padding:22px 8px;
+    color:var(--faint);font-size:11.5px;line-height:1.5;text-align:center;}
+  .ifs-item{border:1px solid var(--line);border-radius:9px;padding:8px 10px;cursor:pointer;
+    background:var(--input);display:flex;flex-direction:column;gap:4px;text-align:left;}
+  .ifs-item:hover{background:var(--input-2);}
+  .ifs-item.on{border-color:var(--primary);background:var(--input-2);}
+  .ifs-item .ifs-when{font-size:10px;color:var(--faint);
+    font-family:ui-monospace,Menlo,monospace;}
+  .ifs-item .ifs-heard{font-size:11.5px;color:var(--ink);line-height:1.35;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+  .ifs-main{min-width:0;overflow-y:auto;padding:16px 18px 26px;}
+  .ifs-wrap{position:relative;border:1px solid var(--wave-edge,var(--line));
+    border-radius:14px;background:var(--card);padding:14px 46px 0 14px;overflow:hidden;}
+  /* the soft wash behind the trace, tinted by whoever is speaking */
+  .ifs-wrap::before{content:'';position:absolute;inset:0;pointer-events:none;
+    background:linear-gradient(180deg,var(--wave-wash,transparent) 0%,transparent 78%);}
+  .ifs-chip{position:absolute;top:10px;left:14px;z-index:2;font-size:10.5px;
+    font-weight:600;letter-spacing:.02em;padding:3px 9px;border-radius:20px;
+    color:#fff;background:var(--wave-edge,#60a5fa);}
+  /* dB ladder down the right edge, as in a real editor */
+  .ifs-db{position:absolute;top:14px;right:8px;bottom:26px;width:30px;z-index:2;
+    display:flex;flex-direction:column;justify-content:space-between;
+    font-size:8.5px;color:var(--faint);font-family:ui-monospace,Menlo,monospace;
+    text-align:right;pointer-events:none;}
+  .ifs-playhead{position:absolute;top:8px;bottom:30px;width:2px;z-index:3;
+    background:#ef4444;border-radius:2px;pointer-events:none;display:none;
+    box-shadow:0 0 6px rgba(239,68,68,.6);}
+  .ifs-playhead::after{content:'';position:absolute;top:-4px;left:-4px;
+    border-left:5px solid transparent;border-right:5px solid transparent;
+    border-top:6px solid #ef4444;}
+  #ifsWave{display:block;width:100%;height:210px;cursor:pointer;border-radius:8px;}
+  .ifs-ruler{display:flex;justify-content:space-between;padding:5px 2px 9px;
+    font-size:9.5px;color:var(--faint);font-family:ui-monospace,Menlo,monospace;}
+  .ifs-stats{margin-top:8px;font-size:10.5px;color:var(--faint);
+    font-family:ui-monospace,Menlo,monospace;}
+  .ifs-legend{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 4px;}
+  .ifs-key{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);
+    border:1px solid var(--line);border-radius:20px;padding:4px 10px;background:var(--card);}
+  .ifs-key i{width:10px;height:10px;border-radius:3px;display:block;flex:none;}
+  .ifs-play{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 2px;}
+  .ifs-detail{margin-top:14px;border-top:1px solid var(--line2);padding-top:14px;
+    font-size:12.5px;line-height:1.5;color:var(--ink);}
+  .ifs-detail .ifs-q{color:var(--muted);font-size:11.5px;margin-bottom:6px;}
+  .ifs-quote{border-left:2px solid var(--line);padding-left:10px;margin-top:8px;
+    color:var(--ink);}
+  .ifs-none{color:var(--muted);font-size:13px;padding:44px 4px;text-align:center;
+    line-height:1.7;}
+  .ifs-empty{max-width:520px;margin:6vh auto 0;text-align:left;color:var(--muted);
+    font-size:13px;line-height:1.65;}
+  .ifs-empty-icon{font-size:34px;line-height:1;margin-bottom:12px;text-align:center;}
+  .ifs-empty h3{color:var(--ink);font-size:16px;font-weight:600;margin:0 0 8px;
+    text-align:center;letter-spacing:-.01em;}
+  .ifs-empty p{margin:0 0 14px;}
+  .ifs-empty ol{margin:0 0 14px;padding-left:20px;}
+  .ifs-empty li{margin-bottom:7px;}
+  .ifs-empty b{color:var(--ink);font-weight:600;}
+  .ifs-empty-note{border-top:1px solid var(--line2);padding-top:12px;color:var(--faint);
+    font-size:12px;}
+  @media (max-width:820px){
+    .ifs-body{grid-template-columns:1fr;grid-template-rows:auto 1fr;}
+    .ifs-list{max-height:26vh;border-right:0;border-bottom:1px solid var(--line);
+      flex-direction:row;overflow-x:auto;}
+    .ifs-item{min-width:170px;}
+    #ifsWave{height:150px;}
+  }
   .toggle{display:flex;align-items:center;justify-content:space-between;gap:8px;border:1px solid var(--line);border-radius:10px;padding:8px 11px;font-size:12.5px;font-weight:500;cursor:pointer;background:var(--input);color:var(--ink);}
   .toggle .pill{width:34px;height:19px;border-radius:20px;background:var(--pill);position:relative;transition:.18s;flex:none;}
   .toggle .pill::after{content:'';position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2);transition:.18s;}
@@ -371,6 +459,11 @@
       </select></div>
       <div class="field"><label>Voice</label><select id="voice"><option value="">Pack default</option></select></div>
       <div class="field"><label>Model (speed)</label><select id="model"></select></div>
+      <div class="field"><label>Turn taking</label><select id="eager">
+        <option value="eager">Eager — reply fast</option>
+        <option value="normal" selected>Normal</option>
+        <option value="patient">Patient — let them think</option>
+      </select></div>
     </div>
 
     <div class="actions">
@@ -388,6 +481,12 @@
       <button class="mode" id="dfBtn" disabled title="Run DeepFilterNet noise suppression before transcription. Measured to make transcription WORSE (WER 0.10 vs 0.00) — on to hear the difference for yourself.">🎛 DeepFilter</button>
       <button class="mode" id="isoBtn" disabled title="Split the turn by speaker and transcribe only YOUR voice. Rescues turns a colleague talking in a gap would otherwise discard.">🗣 Voice Isolation</button>
     </div>
+    <!-- Always reachable, including with every filter off: "nothing was removed" is
+         an answer worth being able to check, and the empty page says what to switch
+         on to get more out of it. -->
+    <button class="btn" id="inspOpen" style="justify-content:center;gap:8px;"
+            title="Open the recording of each turn full-page: where the speaker boundaries fell, what reached the recogniser and what was cut.">
+      🔬 Audio inspector</button>
     <div class="toggle on" id="orbToggle" title="Show/hide the AI voice orb"><span>AI voice orb</span><span class="pill"></span></div>
 
     <div class="brand-voice">
@@ -458,6 +557,24 @@
   <div class="fs-hint" id="fsHint"></div>
 </div>
 
+<!-- Full-page audio inspector. The recording is the browser's OWN copy of the turn —
+     nothing is fetched back from the server, which keeps the caller's audio on the
+     caller's machine and makes the page work after the call has ended. -->
+<div class="ifs" id="inspFS" hidden>
+  <div class="ifs-head">
+    <div>
+      <div class="ifs-title">🔬 Audio inspector</div>
+      <div class="ifs-sub" id="ifsSub"></div>
+    </div>
+    <button class="btn" id="ifsClose">✕ Close</button>
+  </div>
+  <div class="ifs-body">
+    <div class="ifs-list" id="ifsList"
+         data-empty="No turns recorded yet. Start a call and speak — every utterance you send is kept here, with the boundaries the diarizer found drawn over your own recording."></div>
+    <div class="ifs-main" id="ifsMain"></div>
+  </div>
+</div>
+
 <script>
 // ---------- DOM ----------
 const chat=document.getElementById('chat'), packSel=document.getElementById('pack'), voiceSel=document.getElementById('voice'), langSel=document.getElementById('lang');
@@ -467,6 +584,7 @@ const startBtn=document.getElementById('startBtn'), endBtn=document.getElementBy
 const voiceFS=document.getElementById('voiceFS'), fsLabel=document.getElementById('fsLabel'), fsHint=document.getElementById('fsHint'),
       fsCall=document.getElementById('fsCall'), fsMin=document.getElementById('fsMin'), expandBtn=document.getElementById('expandBtn');
 let ws, currentPack, botBubble=null, barged=false, fsOpen=false, sttFast=false;
+let _ended=false;              // the server hung up deliberately — do not reconnect
 // 'auto' | 'on' | 'off'. dfOn/isoOn stay as the "could run" flag the inspector reads.
 let dfMode='auto', isoMode='auto', dfOn=true, isoOn=true;
 function paintMode(btn, mode, label){
@@ -631,6 +749,12 @@ let specWords=false, specUttMs=0, pendingPCM=null, commitTimer=null;
 let holdForMore=false;
 let settled = false;         // server says the words admit no continuation
 let expectSlot = null;       // the slot the server last asked for
+let tone = null;             // what the caller's PITCH says: finished | holding | unsure
+let fillerHold = false;      // …and whether they trailed off on "um" / "मतलब"
+// Gentle, and asymmetric on purpose. Closing early on a wrong reading chops a sentence
+// in half — the failure this endpointer has been retuned twice to avoid — while waiting
+// too long only costs a pause. Anything the detector is not sure about lands on 1.
+const TONE_SCALE = {finished: 0.80, holding: 1.25, unsure: 1};
 let bcBuffer = null, bcUsedThisTurn = false;   // the preloaded listening noise
 const HOLD_EXTRA_MS = 900;
 const SETTLED_MS = 400;      // the transcript is unambiguously finished — close now
@@ -645,13 +769,20 @@ const EXPECT_EXTRA_MS = {phone: 600, datetime: 300, name: 150};
 const BACKCHANNEL_AFTER_MS = 2600;   // only on a turn long enough to feel unattended
 const BACKCHANNEL_PAUSE_MS = 180;    // …and only into a real gap, never over a word
 const BACKCHANNEL_GAIN     = 0.32;   // ducked: a listener murmurs, they do not announce
+// The server's turn policy (zensuvidha/turn.py), delivered on connect. The fallback is
+// the "normal" ladder verbatim, so a client that connects to an older server — or
+// before the session frame lands — behaves exactly as it did before.
+let TURN = {base_ms:800, long_ms:1200, long_utt_ms:1500, max_ms:2000, settled_ms:400,
+            hold_extra_ms:900, filler_extra_ms:500, pause_factor:1.25,
+            expect_extra_ms:{phone:600, datetime:300, name:150},
+            tone_scale:{finished:0.80, holding:1.25, unsure:1}, eagerness:'normal'};
 function endpointMs(){
   // A one-word answer is finished the moment it stops — "हाँ" needs no thinking time, and
   // making it wait would slow every turn. Only a sentence long enough to have a MIDDLE
   // gets the longer window, because that is where people stop to search for a word.
-  const base = (uttMs < LONG_UTT_MS)
-    ? ENDPOINT_MS
-    : Math.max(ENDPOINT_LONG_MS, speakerPauseMs*1.25);
+  const base = (uttMs < TURN.long_utt_ms)
+    ? TURN.base_ms
+    : Math.max(TURN.long_ms, speakerPauseMs*TURN.pause_factor);
   // A sentence the server can SEE is unfinished earns extra time regardless of length —
   // "मेरा नाम" is short and obviously not done.
   // The server can also see that the words are FINISHED — a completed phone number, or
@@ -659,12 +790,32 @@ function endpointMs(){
   // window sized for someone still searching for a word. This is the single biggest
   // contributor to the call feeling slow, and it costs nothing when the signal is off.
   // `holdForMore` always wins: "unfinished" is the conservative answer of the two.
-  if(settled && !holdForMore) return SETTLED_MS;
+  if(settled && !holdForMore && !fillerHold) return TURN.settled_ms;
   // …but a number that has NOT reached full length still deserves the gaps people
   // leave between digit groups. `settled` above already closes a complete one fast,
   // so this only lengthens the case that is genuinely still in progress.
-  const extra = (EXPECT_EXTRA_MS[expectSlot] || 0) + (holdForMore ? HOLD_EXTRA_MS : 0);
-  return Math.min(ENDPOINT_MAX_MS + extra, base + extra);
+  // A filler is weaker evidence than a dangling postposition and stronger than
+  // silence — and never both, or one hesitation is charged twice.
+  const extra = (TURN.expect_extra_ms[expectSlot] || 0)
+              + (holdForMore ? TURN.hold_extra_ms
+                 : fillerHold ? TURN.filler_extra_ms : 0);
+  const win = Math.min(TURN.max_ms + extra, base + extra);
+  // Last, and only within the bounds everything above already set: what the caller's
+  // VOICE says. Pitch and energy fall together through the end of an utterance and are
+  // held when someone means to carry on — the one turn-taking cue in this file that is
+  // not counting silence or reading words. It reports "unsure" unless it is well clear,
+  // in which case TONE_SCALE is 1 and nothing changes.
+  // `holdForMore` still wins: a caller who says "my mobile number is" with a perfect
+  // falling contour has still not given us the number.
+  if(holdForMore) return win;
+  // Clamp AFTER scaling, not before. Applying 1.25 to an already-clamped window pushed
+  // it past ENDPOINT_MAX_MS, whose whole job is that a noisy line can never hang the
+  // turn open — and worse, endUtterance stores the result as lastEndpointMs, which
+  // notePause feeds back into speakerPauseMs, which raises `base` for the REST OF THE
+  // CALL. One "holding" verdict would have ratcheted the caller's learned window up
+  // permanently, above its own ceiling.
+  return Math.min(TURN.max_ms + extra,
+                  Math.round(win * (TURN.tone_scale[tone] || 1)));
 }
 function notePause(ms){          // they carried on talking after a pause this long
   if(ms > speakerPauseMs){
@@ -822,7 +973,10 @@ function floatTo16kWav(chunks, srcRate){
   ws2(0,'RIFF');v.setUint32(4,36+data.length*2,true);ws2(8,'WAVE');ws2(12,'fmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
   v.setUint32(24,dst,true);v.setUint32(28,dst*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);ws2(36,'data');v.setUint32(40,data.length*2,true);
   let o=44; for(let i=0;i<data.length;i++){let s=Math.max(-1,Math.min(1,data[i]));v.setInt16(o,s<0?s*0x8000:s*0x7FFF,true);o+=2;}
-  return {blob:new Blob([v],{type:'audio/wav'}), seconds:data.length/dst};
+  // `data` comes back too: it is the exact 16k signal the server is about to receive,
+  // so the inspector can draw and replay what was actually sent rather than a second
+  // resampling of the same audio that would not line up with the server's timestamps.
+  return {blob:new Blob([v],{type:'audio/wav'}), seconds:data.length/dst, data};
 }
 
 async function makeMicNode(){
@@ -869,7 +1023,7 @@ async function startCall(){
   callActive=true; vad='silence';
   speechMs=silenceMs=bargeMs=uttMs=0; uttPCM=[]; preRoll=[]; frameQ=[]; specSent=false;
   specWords=false; specUttMs=0; pendingPCM=null; clearTimeout(commitTimer); commitTimer=null;
-  speakerPauseMs=0; lastEndpointAt=0; holdForMore=false;   // re-learn this caller's rhythm each call
+  speakerPauseMs=0; lastEndpointAt=0; holdForMore=false; tone=null; fillerHold=false;   // re-learn this caller's rhythm each call
   if(silero.ready) resetSilero();                    // fresh LSTM state per call
   syncControls(); setHint();
   setState(micMode==='auto'?'listening':'idle');
@@ -944,7 +1098,7 @@ async function handleFrame(f, backlogged){
     // Discard it. If they really are still talking, BARGE_MS below opens a fresh turn.
     if(vad==='speech'){ vad='silence'; uttPCM=[]; uttMs=0; silenceMs=0; speechMs=0; bcUsedThisTurn=false;
                         dropSpeculation(); specTries=0; specAt=0; specUttMs=0;
-                        holdForMore=false; }
+                        holdForMore=false; tone=null; fillerHold=false; }
     // SELF-ECHO GUARD. Today the browser's AEC removes the agent's own voice before we
     // ever see it — but AEC is a getUserMedia feature, and a telephony transport has no
     // getUserMedia. On a phone line the agent WILL hear itself through the caller's
@@ -988,6 +1142,7 @@ async function handleFrame(f, backlogged){
         const since = performance.now() - lastEndpointAt;
         if(lastEndpointAt && since < CUT_OFF_MS) notePause(lastEndpointMs + since);
         vad='speech'; uttPCM=preRoll.slice(); uttMs=preRoll.length*ms; holdForMore=false;
+        tone=null; fillerHold=false;  // a turn with no partial must not inherit the last one's
         maxGapMs=0;
         specTries=0; specAt=0; specWords=false; specUttMs=0; setState('user');
       }
@@ -1015,12 +1170,15 @@ async function handleFrame(f, backlogged){
         // The SERVER decides whether it can help: isolation needs a voiceprint to trim
         // against, and only the server knows whether it has one. Inferring that here
         // from inspector rows would couple a control decision to a debug panel.
+        // Registered ONCE, before either path — the send below can throw with the socket
+        // closing, and the catch falls through to the local discard, which used to
+        // register the same recording again and hang the explanation on the duplicate.
+        const salvage = keepClip(wavOf(latched), 'latched');
         if(latched && ws && ws.readyState===1){
           console.log('[vad] latched — sending it for isolation instead of discarding');
           try{
-            const {blob} = wavOf(latched);
             ws.send(JSON.stringify({type:'stt_hint', mode:'latched'}));
-            ws.send(blob);
+            ws.send(salvage.wav);
             setState('thinking');
             return;                      // the server answers, or drops it with a reason
           }catch(_){ /* fall through to the local discard */ }
@@ -1117,7 +1275,12 @@ function endUtterance(){
   let peak=0; for(const c of pcm){ for(let i=0;i<c.length;i++){ const a=Math.abs(c[i]); if(a>peak) peak=a; } }
   if(ms<MIN_UTT_MS || peak<Math.max(noiseFloor*6, 0.02)){ dropSpeculation(); idle(); return; }
   if(!(ws&&ws.readyState===1)){ idle(); return; }
-  holdForMore=false;
+  holdForMore=false; tone=null; fillerHold=false;
+  // Register the recording ONCE, here, where the turn is decided — not per send path.
+  // The shortcut below never ships the audio at all (the server already has the
+  // speculative frame), so registering at the send would lose exactly those turns
+  // from the inspector.
+  const clip=keepClip(wavOf(pcm));
   // Take the zero-STT shortcut ONLY when the guess is actually usable:
   //   1. the server confirmed it heard words (a `partial` came back) — an empty guess
   //      committed is a turn that simply vanishes, and
@@ -1126,6 +1289,10 @@ function endUtterance(){
   const fresh = ms - specUttMs;                      // audio recorded since the guess
   if(specSent && specWords && fresh <= SPEC_STALE_MS){
     specSent=false;
+    // The server answers from the guess it already transcribed, so this recording is
+    // never analysed as a whole. Say so rather than drawing an empty waveform that
+    // looks like "nothing was found".
+    clip.note='answered from the speculative transcript — this recording was never re-analysed';
     pendingPCM=pcm;                                  // keep it until the server confirms
     ws.send(JSON.stringify({type:'commit'}));
     // Belt and braces: if the commit is answered by nothing at all (a dropped frame,
@@ -1136,7 +1303,7 @@ function endUtterance(){
   }
   dropSpeculation();                                 // the guess is stale — void it
   setState('thinking');
-  ws.send(wavOf(pcm).blob);
+  ws.send(clip.wav);
 }
 let lastRepeatAt=0;
 const REPEAT_GAP_MS = 12000;    // never nag more often than this
@@ -1156,6 +1323,9 @@ function sendPending(){
   const pcm=pendingPCM; pendingPCM=null;
   if(!pcm || !(ws&&ws.readyState===1)) return;
   setState('thinking');
+  // It IS being analysed after all — clear the note the shortcut left on it, or the
+  // page would keep claiming this recording was never looked at.
+  const last=clips[clips.length-1]; if(last && !last.insight) last.note=null;
   ws.send(wavOf(pcm).blob);
 }
 
@@ -1249,6 +1419,10 @@ function drawSpec(){
 }
 
 function addInsight(m){
+  // BEFORE the docked pane's own guard: the full-page inspector is reachable with every
+  // filter switched off, and "nothing was removed" is exactly the answer somebody opens
+  // it to check. Gating the data on the pane being visible would leave that page empty.
+  attachInsight(m);
   if(!inspectorActive()) return;
   const total=m.total_s||0, kept=m.kept_s||0;
   const trimmed = m.speakers>1 && kept>0 && kept<total-0.05;
@@ -1274,6 +1448,12 @@ function addInsight(m){
   else if(m.snr_db!=null) tag('t-info', `${m.snr_db}dB room · clean enough`);
   if(m.filter_ms) tag('t-info', `filters ${m.filter_ms}ms`);
   if(m.speculative) tag('t-info','guess');
+  // What the caller's PITCH said about this turn ending. A signal that moves the
+  // endpoint window with nothing on screen explaining it is the exact thing the
+  // inspector exists to prevent — a call that works, or waits, for a reason the
+  // operator cannot observe looks like luck.
+  if(m.tone && m.tone!=='unsure') tag('t-info', m.tone==='finished'
+      ? 'voice: finished · closed sooner' : 'voice: still talking · waited');
   row.appendChild(top);
 
   if(total>0){
@@ -1316,6 +1496,414 @@ function addInsight(m){
   inspRows.prepend(row);
   while(inspRows.children.length>12) inspRows.lastChild.remove();
 }
+
+// ---------- full-page inspector: the recording, drawn ------------------------
+// The docked pane answers "was anything removed?". This answers "removed from
+// WHERE?", which is a question about a position in time and cannot be shown on a
+// ratio bar. The audio is the browser's own copy of what it sent, so nothing is
+// fetched back and the page still works after the call has ended.
+const inspFS=document.getElementById('inspFS'), ifsList=document.getElementById('ifsList'),
+      ifsMain=document.getElementById('ifsMain'), ifsSub=document.getElementById('ifsSub');
+const clips=[]; let selected=-1, ifsOpen=false, playCtx=null, playing=null;
+const MAX_CLIPS=40;          // …and a byte budget beside it, because the count alone is
+const CLIP_BUDGET=24e6;      // not a bound: 40 turns at the 25s MAX_UTT_MS cap is 64MB of
+                             // float32, not the "few MB" this comment first claimed. A long
+                             // call must not grow the tab's memory without limit.
+// One hue per speaker. Index 0 is whoever the voiceprint matched best, so "green is
+// you" holds on every turn rather than depending on who happened to speak first.
+const SPK_COLOURS=['#34d399','#f87171','#a78bfa','#fbbf24','#38bdf8'];
+// Audio nobody has attributed to a speaker — the common case with isolation off. Its
+// own colour, so "not analysed" never masquerades as "confirmed to be you".
+const NEUTRAL='#60a5fa';
+
+function keepClip(wav, kind){
+  const clip={at:new Date(), pcm:wav.data, seconds:wav.seconds, wav:wav.blob,
+              insight:null, note:null, kind:kind||'turn'};
+  clips.push(clip);
+  let held=clips.reduce((n,c)=>n+c.pcm.length*4, 0);
+  while(clips.length>MAX_CLIPS || (clips.length>1 && held>CLIP_BUDGET)){
+    held-=clips[0].pcm.length*4; clips.shift(); if(selected>=0) selected--;
+  }
+  if(ifsOpen) renderList();
+  return clip;
+}
+
+function attachInsight(m){
+  // OLDEST unclaimed, which is what the comment always said and the loop did not do:
+  // it walked newest-first. With two turns in flight — a clip registered, the caller
+  // barges in, a second clip registered before the first insight lands — the first
+  // turn's segments were drawn over the second turn's waveform. Silently, because a
+  // mis-shaded region looks exactly like a correct one.
+  // Safe now in a way it would not have been before: the commit path emits an insight
+  // too, so a shortcut turn no longer sits unclaimed forever and swallow the next
+  // turn's explanation.
+  if(m.speculative) return;
+  for(let i=0;i<clips.length;i++){
+    if(!clips[i].insight){ clips[i].insight=m; clips[i].note=null; break; }
+  }
+  if(ifsOpen){ renderList(); if(selected>=0) renderClip(); }
+}
+
+function fmtTime(d){ return d.toTimeString().slice(0,8); }
+
+function renderList(){
+  ifsList.innerHTML='';
+  clips.slice().reverse().forEach((c,ri)=>{
+    const i=clips.length-1-ri;
+    const b=document.createElement('button');
+    b.className='ifs-item'+(i===selected?' on':'');
+    const ins=c.insight||{};
+    const when=document.createElement('div'); when.className='ifs-when';
+    const bits=[fmtTime(c.at), c.seconds.toFixed(1)+'s'];
+    if(ins.speakers>1) bits.push(ins.speakers+' voices');
+    when.textContent=bits.join(' · ');
+    const tags=document.createElement('div'); tags.className='insp-top';
+    const t=(cls,txt)=>{const e=document.createElement('span');e.className='insp-tag '+cls;
+                        e.textContent=txt;tags.appendChild(e);};
+    if(c.insight) t(ins.accepted?'t-keep':'t-drop', ins.accepted?'TRANSCRIBED':'DISCARDED');
+    else t('t-info','not analysed');
+    if(ins.isolate) t('t-info','trimmed');
+    if(ins.tone==='finished') t('t-info','voice: done');
+    else if(ins.tone==='holding') t('t-info','voice: mid');
+    if(ins.denoise) t('t-info','denoised');
+    const heard=document.createElement('div'); heard.className='ifs-heard';
+    heard.textContent=ins.heard || c.note || (c.insight?'nothing recognisable in it':'—');
+    b.append(when,tags,heard);
+    b.onclick=()=>{ selected=i; renderList(); renderClip(); };
+    ifsList.appendChild(b);
+  });
+}
+
+// ---- the waveform ----------------------------------------------------------
+// Peak envelope per pixel column, coloured by which speaker's segment covers that
+// moment, with everything the recogniser never received drawn faint. Both facts are
+// on ONE picture on purpose: "the stranger's words" and "the part that was cut" are
+// the same region, and two side-by-side pictures make the reader prove that.
+function segAt(ins,t){
+  for(const s of ins.segments||[]) if(t>=s.s && t<s.e) return s;
+  return null;
+}
+function keptAt(ins,t){
+  if(!ins.kept_spans) return true;                 // nothing was removed
+  return ins.kept_spans.some(([a,b])=>t>=a && t<b);
+}
+function spkIndex(ins,spk){
+  // Order speakers by how well they matched, so colour 0 is always the caller.
+  const order=[...new Set((ins.segments||[]).map(s=>s.spk))]
+    .sort((a,b)=>(simOf(ins,b)??-1)-(simOf(ins,a)??-1));
+  const i=order.indexOf(spk); return i<0?0:i;
+}
+function simOf(ins,spk){
+  const s=(ins.segments||[]).find(x=>x.spk===spk); return s?s.sim:null;
+}
+
+function drawTurnWave(cv,clip,tries){
+  const dpr=window.devicePixelRatio||1, W=cv.clientWidth, H=cv.clientHeight;
+  // A canvas that has not been laid out yet reports 0, and every loop below then runs
+  // zero times — painting nothing, throwing nothing, and leaving a blank box that looks
+  // exactly like a broken feature. Drawn one frame after the panel is revealed, and one
+  // frame is not always enough.
+  if(!W || !H){
+    if((tries||0) < 10) requestAnimationFrame(()=>drawTurnWave(cv,clip,(tries||0)+1));
+    else console.warn('[inspector] canvas never got a size — waveform not drawn');
+    return;
+  }
+  const g=cv.getContext('2d');
+  cv.width=W*dpr; cv.height=H*dpr; g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,W,H);
+  const css=getComputedStyle(document.documentElement);
+  const line2=css.getPropertyValue('--line2').trim()||'#eee';
+  const mid=H/2;
+  if(!clip || !clip.pcm || !clip.pcm.length){
+    // Say so ON THE CANVAS. A silent blank box is indistinguishable from a bug, and this
+    // is the one panel whose whole job is showing what happened.
+    g.fillStyle=css.getPropertyValue('--muted').trim()||'#9aa2ad';
+    g.font='12px ui-monospace,Menlo,monospace'; g.textAlign='center';
+    g.fillText('no audio kept for this turn', W/2, mid);
+    const st=document.getElementById('ifsStats');
+    if(st) st.textContent='no samples were kept for this turn';
+    return;
+  }
+  const pcm=clip.pcm, n=pcm.length, ins=clip.insight||{};
+
+  // NORMALISE TO THE CLIP'S OWN PEAK. This is what made the waveform invisible: a
+  // browser microphone records speech at a peak of roughly 0.02-0.30, and drawing raw
+  // amplitude against half of a 210px canvas gave bars 2-10 PIXELS tall. The browser's
+  // own speech gate accepts anything above max(noiseFloor*6, 0.02), so a perfectly
+  // good turn could be two pixels of trace. The floor stops near-silence being
+  // amplified into a full-height wall of noise.
+  let peak=0;
+  for(let i=0;i<n;i+=7){ const a=Math.abs(pcm[i]); if(a>peak) peak=a; }
+  const gain=0.94/Math.max(peak,0.05);
+
+  // Bars with gaps, mirrored about the centre — the shape people recognise as audio.
+  // A 1px-per-column trace reads as a smear at this width and as nothing at all when
+  // it is quiet.
+  // Thin and tightly packed. The reference editors run 2px bars at a 3px pitch, which
+  // reads as a waveform rather than as a bar chart.
+  const BAR=2, GAP=1, slot=BAR+GAP, cols=Math.max(1,Math.floor(W/slot));
+
+  // Everything the recogniser never received, tinted behind the bars so it is legible
+  // even where the caller was quiet.
+  if(ins.kept_spans){
+    g.fillStyle=line2;
+    const step=clip.seconds/W;
+    for(let x=0;x<W;x++) if(!keptAt(ins,x*step)) g.fillRect(x,0,1,H);
+  }
+  g.strokeStyle=line2; g.beginPath(); g.moveTo(0,mid); g.lineTo(W,mid); g.stroke();
+
+  const stats=document.getElementById('ifsStats');
+  if(stats) stats.textContent =
+    clip.seconds.toFixed(1)+'s · peak '+peak.toFixed(3)+' · '+n.toLocaleString()
+    +' samples · '+Math.round(W)+'×'+Math.round(H)+'px · '+cols+' bars';
+  const round = typeof g.roundRect==='function';
+  for(let c=0;c<cols;c++){
+    const a=Math.floor(c*n/cols), b=Math.max(a+1,Math.floor((c+1)*n/cols));
+    let m=0;
+    for(let i=a;i<b && i<n;i++){ const v=Math.abs(pcm[i]); if(v>m) m=v; }
+    const t=(c+0.5)*clip.seconds/cols, seg=segAt(ins,t), kept=keptAt(ins,t);
+    const h=Math.max(2, Math.min(mid*0.94, m*gain*mid));
+    g.globalAlpha = kept?1:0.28;
+    g.fillStyle = seg ? SPK_COLOURS[spkIndex(ins,seg.spk)%SPK_COLOURS.length] : NEUTRAL;
+    const x=c*slot;
+    if(round){ g.beginPath(); g.roundRect(x, mid-h, BAR, h*2, BAR/2); g.fill(); }
+    else g.fillRect(x, mid-h, BAR, h*2);
+  }
+  g.globalAlpha=1;
+}
+
+// ---- the playhead ---------------------------------------------------------------
+// Clicking a segment plays it, and before this there was nothing on screen to say
+// WHICH part was playing — on a 2.6s clip that is the difference between "I can hear
+// the bit I clicked" and "something is playing, I think".
+let headTimer=null;
+function runPlayhead(clip, from, to){
+  const head=document.getElementById('ifsPlayhead'), cv=document.getElementById('ifsWave');
+  if(!head || !cv || !clip.seconds) return;
+  cancelAnimationFrame(headTimer);
+  const started=performance.now(), W=cv.clientWidth;
+  head.style.display='block';
+  const step=()=>{
+    const t=from+(performance.now()-started)/1000;
+    if(!playing || t>=to){ head.style.display='none'; return; }
+    head.style.left=Math.round((t/clip.seconds)*W)+'px';
+    headTimer=requestAnimationFrame(step);
+  };
+  headTimer=requestAnimationFrame(step);
+}
+function stopPlay(){
+  if(playing){ try{playing.stop();}catch(_){ } playing=null; }
+  cancelAnimationFrame(headTimer);
+  const head=document.getElementById('ifsPlayhead');
+  if(head) head.style.display='none';
+}
+function playRange(clip,from,to){
+  stopPlay();
+  playCtx=playCtx||new (window.AudioContext||window.webkitAudioContext)();
+  const a=Math.max(0,Math.floor(from*16000)), b=Math.min(clip.pcm.length,Math.floor(to*16000));
+  if(b<=a) return;
+  const buf=playCtx.createBuffer(1,b-a,16000);
+  buf.copyToChannel(clip.pcm.subarray(a,b),0);
+  const src=playCtx.createBufferSource(); src.buffer=buf; src.connect(playCtx.destination);
+  src.onended=()=>{ if(playing===src) playing=null; };
+  src.start(); playing=src;
+  runPlayhead(clip, from, to);
+}
+function playKeptOnly(clip){
+  // What the recogniser ACTUALLY received, gaps closed up — the single most useful
+  // thing on this page, because it turns "trust the ratio bar" into "listen to it".
+  const ins=clip.insight||{};
+  if(!ins.kept_spans){ playRange(clip,0,clip.seconds); return; }
+  stopPlay();
+  playCtx=playCtx||new (window.AudioContext||window.webkitAudioContext)();
+  const parts=ins.kept_spans.map(([a,b])=>clip.pcm.subarray(
+    Math.max(0,Math.floor(a*16000)), Math.min(clip.pcm.length,Math.floor(b*16000))));
+  const total=parts.reduce((s,p)=>s+p.length,0);
+  if(!total) return;
+  const buf=playCtx.createBuffer(1,total,16000); const ch=buf.getChannelData(0);
+  let off=0; parts.forEach(p=>{ ch.set(p,off); off+=p.length; });
+  const src=playCtx.createBufferSource(); src.buffer=buf; src.connect(playCtx.destination);
+  src.onended=()=>{ if(playing===src) playing=null; };
+  src.start(); playing=src;
+}
+
+function renderClip(){
+  const clip=clips[selected];
+  ifsMain.innerHTML='';
+  if(!clip){
+    // "No turns yet" and "turns exist, none selected" are different situations and the
+    // first one is what somebody sees when they open this before making a call. Telling
+    // them to pick from an empty list reads as a bug.
+    ifsMain.innerHTML = clips.length
+      ? '<div class="ifs-none"><b>Pick a turn on the left</b><br>'
+        + 'Each one is your own recording, with what the diarizer found drawn over it.</div>'
+      : '<div class="ifs-empty">'
+        + '<div class="ifs-empty-icon">🎙</div>'
+        + '<h3>Nothing recorded yet</h3>'
+        + '<p>This page shows what actually reached the recogniser on every turn — your '
+        + 'own audio, who it thought was speaking, and anything it removed.</p>'
+        + '<ol>'
+        + '<li>Close this page and press <b>Start call</b></li>'
+        + '<li>Allow the microphone when the browser asks</li>'
+        + '<li>Say a sentence or two, then open <b>🔬 Audio inspector</b> again</li>'
+        + '</ol>'
+        + '<p class="ifs-empty-note">Every utterance you send is kept here — waveform, '
+        + 'speaker colours, click-to-play, and a button to save it for benchmarking.</p>'
+        + '</div>';
+    return;
+  }
+  const ins=clip.insight||{};
+
+  const wrap=document.createElement('div'); wrap.className='ifs-wrap';
+  // Tint the whole panel with whoever is speaking, the way a track in an editor is
+  // coloured — it identifies the clip at a glance, before you read anything.
+  const spks0=[...new Set((ins.segments||[]).map(x=>x.spk))]
+    .sort((a,b)=>(simOf(ins,b)??-1)-(simOf(ins,a)??-1));
+  const tint = spks0.length ? SPK_COLOURS[0] : NEUTRAL;
+  wrap.style.setProperty('--wave-edge', tint);
+  wrap.style.setProperty('--wave-wash', tint+'22');
+  const chip=document.createElement('div'); chip.className='ifs-chip';
+  chip.textContent = ins.speakers>1 ? (ins.speakers+' voices')
+                   : spks0.length ? 'you' : (clip.insight?'your recording':'not analysed');
+  wrap.appendChild(chip);
+  const db=document.createElement('div'); db.className='ifs-db';
+  ['0','-7','-14','-20','-14','-7','0'].forEach(v=>{
+    const e=document.createElement('span'); e.textContent=v; db.appendChild(e); });
+  wrap.appendChild(db);
+  const head=document.createElement('div'); head.className='ifs-playhead';
+  head.id='ifsPlayhead'; wrap.appendChild(head);
+  const cv=document.createElement('canvas'); cv.id='ifsWave'; wrap.appendChild(cv);
+  const ruler=document.createElement('div'); ruler.className='ifs-ruler';
+  for(let i=0;i<=4;i++){ const s=document.createElement('span');
+    s.textContent=(clip.seconds*i/4).toFixed(1)+'s'; ruler.appendChild(s); }
+  const stats=document.createElement('div'); stats.className='ifs-stats';
+  stats.id='ifsStats'; stats.textContent='drawing…';
+  wrap.appendChild(ruler); ifsMain.appendChild(wrap); ifsMain.appendChild(stats);
+  requestAnimationFrame(()=>drawTurnWave(cv,clip));
+
+  const legend=document.createElement('div'); legend.className='ifs-legend';
+  const key=(colour,label,alpha)=>{ const e=document.createElement('span');
+    e.className='ifs-key'; const i=document.createElement('i');
+    i.style.background=colour; if(alpha) i.style.opacity=alpha;
+    e.appendChild(i); e.appendChild(document.createTextNode(label));
+    legend.appendChild(e); };
+  const spks=[...new Set((ins.segments||[]).map(s=>s.spk))]
+    .sort((a,b)=>(simOf(ins,b)??-1)-(simOf(ins,a)??-1));
+  spks.forEach((spk,i)=>{
+    const sim=simOf(ins,spk);
+    key(SPK_COLOURS[i%SPK_COLOURS.length],
+        (i===0?'you':'other voice '+i)+(sim!=null?' · match '+sim.toFixed(2):''));
+  });
+  if(ins.kept_spans) key(SPK_COLOURS[0],'faded = removed before transcription','.34');
+  if(!spks.length) key('#9aa2ad', clip.insight?'no speaker boundaries found':'not analysed');
+  ifsMain.appendChild(legend);
+
+  const play=document.createElement('div'); play.className='ifs-play';
+  const btn=(label,fn)=>{ const b=document.createElement('button'); b.className='btn';
+                          b.textContent=label; b.onclick=fn; play.appendChild(b); };
+  btn('▶ Play the recording', ()=>playRange(clip,0,clip.seconds));
+  if(ins.kept_spans) btn('▶ Play what the recogniser got', ()=>playKeptOnly(clip));
+  btn('■ Stop', stopPlay);
+  btn('⬇ Save this turn for benchmarking', ()=>saveClip(clip));
+  ifsMain.appendChild(play);
+
+  const detail=document.createElement('div'); detail.className='ifs-detail';
+  detail.innerHTML='<div class="ifs-q">Click anywhere on the waveform to hear that '
+                  +'moment on its own.</div>';
+  const summary=document.createElement('div');
+  const bits=[];
+  if(clip.note) bits.push(clip.note);
+  else if(!clip.insight) bits.push('This turn was not analysed.');
+  else{
+    bits.push(ins.accepted?'Answered.':'Discarded — no reply was generated.');
+    if(ins.speakers>1) bits.push(ins.speakers+' voices found');
+    if(ins.kept_spans){
+      const kept=ins.kept_spans.reduce((s,[a,b])=>s+(b-a),0);
+      bits.push('kept '+kept.toFixed(1)+'s of '+clip.seconds.toFixed(1)+'s');
+    } else if(clip.insight) bits.push('nothing removed');
+    if(typeof ins.similarity==='number') bits.push('voiceprint match '+ins.similarity.toFixed(2));
+    if(ins.snr_db!=null) bits.push(ins.snr_db+'dB room'+(ins.denoise?' · denoised':' · clean enough'));
+    if(ins.dia_reason) bits.push(ins.dia_reason);
+    if(ins.tone) bits.push(ins.tone==='finished' ? 'pitch fell — window shortened 20%'
+                        : ins.tone==='holding'  ? 'pitch held — window lengthened 25%'
+                        : 'pitch inconclusive — window unchanged');
+  }
+  summary.textContent=bits.join(' · ');
+  detail.appendChild(summary);
+  if(ins.heard){ const q=document.createElement('div'); q.className='ifs-quote';
+                 q.textContent='“'+ins.heard+'”'; detail.appendChild(q); }
+  const seg=document.createElement('div'); seg.className='ifs-quote'; seg.hidden=true;
+  seg.id='ifsSeg'; detail.appendChild(seg);
+  ifsMain.appendChild(detail);
+
+  cv.onclick=(ev)=>{
+    const r=cv.getBoundingClientRect(), t=(ev.clientX-r.left)/r.width*clip.seconds;
+    const s=segAt(ins,t);
+    if(s){ playRange(clip,s.s,s.e); }
+    else { playRange(clip, Math.max(0,t-0.4), Math.min(clip.seconds,t+0.4)); }
+    seg.hidden=false;
+    if(!s){ seg.textContent=t.toFixed(2)+'s — outside every detected segment (a gap, '
+                           +'or diarization did not run on this turn).'; return; }
+    const kept=keptAt(ins,(s.s+s.e)/2);
+    const who=spkIndex(ins,s.spk)===0?'you':'a different voice';
+    // The transcript is for the WHOLE turn: Whisper is given the kept audio joined
+    // up, so there is no per-segment text to show and claiming otherwise would be an
+    // invention. What CAN be said honestly is whether these words got in at all.
+    seg.textContent=s.s.toFixed(2)+'–'+s.e.toFixed(2)+'s · '+who
+      +(s.sim!=null?' · match '+s.sim.toFixed(2):'')
+      +' · '+(kept?'reached the recogniser — its words are in the transcript above'
+                  :'removed before transcription — these words were never transcribed');
+  };
+}
+
+// ---- getting real recordings out, which is the point of collecting them ----------
+// Every threshold in this project outside the speaker gate is calibrated on macOS
+// `say` output, and one of those has already been proved wrong on a real microphone by
+// more than two-fold. The benches take --dir; what was missing was any way to FILL that
+// directory without wiring up recording equipment. The browser has been holding the
+// caller's own audio all along.
+function wavBlobOf(pcm){
+  const buf=new ArrayBuffer(44+pcm.length*2), v=new DataView(buf);
+  const w=(o,str)=>{for(let i=0;i<str.length;i++)v.setUint8(o+i,str.charCodeAt(i));};
+  w(0,'RIFF'); v.setUint32(4,36+pcm.length*2,true); w(8,'WAVE'); w(12,'fmt ');
+  v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
+  v.setUint32(24,16000,true); v.setUint32(28,32000,true); v.setUint16(32,2,true);
+  v.setUint16(34,16,true); w(36,'data'); v.setUint32(40,pcm.length*2,true);
+  let o=44; for(let i=0;i<pcm.length;i++){ const x=Math.max(-1,Math.min(1,pcm[i]));
+    v.setInt16(o, x<0?x*0x8000:x*0x7FFF, true); o+=2; }
+  return new Blob([v],{type:'audio/wav'});
+}
+function download(blob,name){
+  const a=document.createElement('a'), u=URL.createObjectURL(blob);
+  a.href=u; a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(u), 4000);
+}
+function saveClip(clip){
+  // wav + txt with the SAME stem, which is the layout scripts/bench_stt.py reads. The
+  // transcript is what the recogniser produced, so it must be corrected by hand before
+  // it is a reference — saying so here is cheaper than a wrong benchmark later.
+  const stamp=clip.at.toTimeString().slice(0,8).replace(/:/g,'');
+  const stem='turn-'+stamp;
+  download(wavBlobOf(clip.pcm), stem+'.wav');
+  const heard=(clip.insight&&clip.insight.heard)||'';
+  download(new Blob([heard+'\n'],{type:'text/plain'}), stem+'.txt');
+  setCaption('Saved '+stem+'.wav + .txt — correct the .txt by hand, then: '
+            +'python scripts/bench_stt.py --dir <folder>','ai');
+}
+
+function openInspector(){
+  ifsOpen=true; inspFS.hidden=false;
+  if(selected<0 && clips.length) selected=clips.length-1;
+  const mods=[isoMode!=='off'?'isolation '+isoMode:null, dfMode!=='off'?'denoise '+dfMode:null]
+    .filter(Boolean).join(' · ');
+  ifsSub.textContent=(clips.length?clips.length+' turn'+(clips.length>1?'s':''):'no turns yet')
+    +(mods?' · '+mods:' · every filter off — turns will show as recorded, nothing removed');
+  renderList(); renderClip();
+}
+function closeInspector(){ ifsOpen=false; inspFS.hidden=true; stopPlay(); }
+document.getElementById('inspOpen').onclick=openInspector;
+document.getElementById('ifsClose').onclick=closeInspector;
+window.addEventListener('resize',()=>{ if(ifsOpen && selected>=0){
+  const cv=document.getElementById('ifsWave'); if(cv) drawTurnWave(cv,clips[selected]); } });
+window.addEventListener('keydown',e=>{ if(e.key==='Escape' && ifsOpen) closeInspector(); });
 
 // ---------- AI orb: soft morphing gradient blob (Siri-style) + robot eyes ----------
 const cv=document.getElementById('viz'), ctx=cv.getContext('2d');
@@ -1676,7 +2264,9 @@ function connect(pack, isReconnect){
     _reconnectDelay=Math.min(_reconnectDelay*1.7, 8000);   // exponential backoff, cap 8s
   };
   ws.onerror=()=>{ try{ws.close();}catch(_){} };
-  ws.onclose=()=>{ scheduleReconnect(); };
+  // A close is only a network blip if nobody said otherwise. `call_ended` sets this,
+  // so a deliberate hang-up is not silently reconnected into a live-looking call.
+  ws.onclose=()=>{ if(_ended){ _ended=false; return; } scheduleReconnect(); };
   ws.onmessage=(ev)=>{
     let m, audioBuf=null;
     if(typeof ev.data==='string'){ m=JSON.parse(ev.data); }
@@ -1689,6 +2279,8 @@ function connect(pack, isReconnect){
       case 'session':
         _sid = m.sid;                              // remember so a reconnect resumes this call
         _serverResumed = !!m.resumed;              // did it actually resume, or start over?
+        if(m.turn) { TURN = m.turn; console.log('[vad] turn policy: '+TURN.eagerness
+                     +' ('+TURN.base_ms+'-'+TURN.max_ms+'ms)'); }
         // The DeepFilter toggle is only usable when the binary has been downloaded
         // (scripts/download_deepfilter.sh); otherwise it stays greyed out.
         if(isoBtn){
@@ -1748,6 +2340,16 @@ function connect(pack, isReconnect){
         specSent=false; specWords=false;
         if(state==='thinking') setState(callActive?(micMode==='auto'?'listening':'idle'):'idle');
         break;
+      case 'call_ended':
+        // The server hung up on purpose. Stop the microphone, say so on screen, and
+        // leave Start call ready — the alternative is a caller talking into a mic that
+        // is still recording for a session that no longer exists.
+        _ended=true;
+        endCall();
+        setCaption(m.text || 'Call ended.', 'ai');
+        statusText.textContent = 'call ended — press Start call to begin again';
+        addMsg('bot', (m.text ? m.text + ' ' : '') + '— call ended.');
+        break;
       case 'commit_miss':
         // The guess was empty, so the server has nothing to answer. It still has our
         // recording waiting on this side — send it rather than losing the turn.
@@ -1769,6 +2371,8 @@ function connect(pack, isReconnect){
           // apply one turn's shape to every turn after it.
           settled = (m.settled===true);
           expectSlot = m.expect || null;   // assigned, never latched
+          tone = m.tone || null;           // …and this one for exactly the same reason
+          fillerHold = (m.filler === true);
           if(settled && !wasHeld) console.log('[vad] transcript is finished → closing in '+SETTLED_MS+'ms');
           if(holdForMore && !wasHeld)
             console.log('[vad] transcript sounds unfinished → waiting '+(endpointMs()|0)+'ms');
@@ -1959,6 +2563,12 @@ fetch('/health').then(r=>r.json()).then(d=>{
     o.textContent=MODEL_HINT[m]?`${m} · ${MODEL_HINT[m]}`:m; modelSel.appendChild(o); });
   modelSel.value=d.model||models[0];
 }).catch(()=>{});
+// Eagerness is applied SERVER-side and the new ladder comes back on the session frame,
+// so the browser never holds a second opinion about the policy.
+const eagerSel=document.getElementById('eager');
+eagerSel.addEventListener('change',()=>{
+  if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'eagerness', value:eagerSel.value}));
+});
 modelSel.addEventListener('change',()=>{ if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'model', model:modelSel.value})); });
 fetch('/packs').then(r=>r.json()).then(d=>{
   d.packs.forEach(p=>{ const o=document.createElement('option'); o.value=p; o.textContent=p.charAt(0).toUpperCase()+p.slice(1); packSel.appendChild(o); });
