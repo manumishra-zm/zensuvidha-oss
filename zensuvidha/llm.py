@@ -295,3 +295,55 @@ def get_llm(cfg: dict):
     if provider in ("vllm", "openai", "openai_compat"):
         return OpenAICompatLLM(cfg)
     return OllamaLLM(cfg)
+
+
+def measure_concurrency(llm, *, model=None, timeout_s: float = 25.0) -> tuple[bool, str]:
+    """Can this backend actually answer two requests AT ONCE?
+
+    Why this is measured rather than configured. Speculative reply — answering the guess
+    while the caller may still be pausing — was built, shipped, and then turned off,
+    because on one local Ollama it made turns 2.6x SLOWER (2339ms -> 6044ms): requests
+    are serialised per model, so the real generation QUEUED BEHIND the guess instead of
+    overlapping it. The feature is only ever a win where the server can genuinely run
+    concurrent requests, and whether it can is a property of the machine in front of you,
+    not of the config file.
+
+    So: run one short generation, then two of them together, and compare. If the pair
+    finishes in appreciably less than twice the single, they overlapped.
+
+    Returns (can_overlap, why). Any failure is (False, reason) — the conservative
+    answer, because being wrong here costs every turn on the call.
+    """
+    import concurrent.futures as _f
+    import time
+    msgs = [{"role": "user", "content": "Reply with the single word: ok"}]
+
+    def once():
+        t0 = time.time()
+        try:
+            llm.chat(msgs, force_json=False, model=model, num_predict=8)
+        except Exception:  # noqa: BLE001
+            return None
+        return time.time() - t0
+
+    try:
+        llm.chat(msgs, force_json=False, model=model, num_predict=8)   # warm
+        solo = once()
+        if not solo:
+            return False, "the model did not answer a probe"
+        t0 = time.time()
+        with _f.ThreadPoolExecutor(max_workers=2) as ex:
+            futures = [ex.submit(once), ex.submit(once)]
+            done = [f.result(timeout=timeout_s) for f in futures]
+        pair = time.time() - t0
+        if any(d is None for d in done):
+            return False, "a concurrent probe failed"
+        # 1.5x is the honest cut. Perfect overlap is 1.0x and perfect serialisation is
+        # 2.0x; anything under 1.5 means real parallelism rather than scheduler noise.
+        ratio = pair / solo if solo else 2.0
+        ok = ratio < 1.5
+        return ok, ("two requests overlap (%.2fx of one)" % ratio if ok
+                    else "requests serialise (%.2fx of one — the guess would QUEUE in "
+                         "front of the real turn)" % ratio)
+    except Exception as e:  # noqa: BLE001
+        return False, "probe failed (%s)" % e

@@ -266,13 +266,17 @@ def keep_matching_speaker(diarizer, gate, voiceprint, samples, sr=16000):
       kept       seconds retained
       total      seconds in
       reason     why the audio was returned as-is, if it was
+      segments   [{s, e, spk, sim, keep}] — the boundaries the diarizer found, in the
+                 ORIGINAL clip's timeline, with `keep` meaning "this reached Whisper".
+                 None when nobody looked, which is not the same as "one segment".
 
     FAILS OPEN in every branch: on any doubt the ORIGINAL audio comes back, because
     dropping the caller is worse than keeping a stranger's sentence.
     """
     import numpy as np
     total = len(samples) / sr if samples is not None and sr else 0.0
-    info = {"speakers": 1, "kept": total, "total": total, "reason": None}
+    info = {"speakers": 1, "kept": total, "total": total, "reason": None,
+            "segments": None, "kept_spans": None}
 
     if diarizer is None or gate is None or voiceprint is None:
         info["reason"] = "not enabled"
@@ -285,6 +289,7 @@ def keep_matching_speaker(diarizer, gate, voiceprint, samples, sr=16000):
 
     speakers = sorted({s for _a, _b, s in segs})
     info["speakers"] = len(speakers)
+    _record(info, segs)
     if len(speakers) <= 1:
         # "One label" is not the same as "one person". The segmentation model is
         # ORDER-SENSITIVE and the clusterer merges freely — measured on the same two
@@ -302,6 +307,7 @@ def keep_matching_speaker(diarizer, gate, voiceprint, samples, sr=16000):
         segs = _resplit_if_contaminated(segs, gate, voiceprint, samples, sr, info)
         speakers = sorted({s for _a, _b, s in segs})
         info["speakers"] = len(speakers)
+        _record(info, segs)
         if len(speakers) <= 1:
             # The overwhelmingly common case — one voice. Nothing to do, and no cost.
             info["reason"] = "single speaker"
@@ -317,6 +323,13 @@ def keep_matching_speaker(diarizer, gate, voiceprint, samples, sr=16000):
     # the gate's own 0.55 accept threshold, i.e. the gate agreed it was the caller) was
     # thrown away because another cluster scored 0.813, losing half the utterance and
     # silently erasing the caller's own name from the transcript.
+    # The SAME bar the whole-utterance gate uses, including anything it has learned
+    # about this microphone. Reading `gate.threshold` directly meant isolation kept
+    # judging against the synthetic 0.55 while the gate itself had adapted to 0.11 —
+    # so on a real caller's mic every cluster scored "not the caller", nothing was ever
+    # trimmed, and switching Voice Isolation on did precisely nothing.
+    bar = gate.effective_threshold() if hasattr(gate, "effective_threshold") \
+        else gate.threshold
     sims = {}
     best, best_sim = None, -1.0
     for spk in speakers:
@@ -334,8 +347,11 @@ def keep_matching_speaker(diarizer, gate, voiceprint, samples, sr=16000):
             best, best_sim = spk, sim
     info["best_sim"] = best_sim
     info["similarities"] = {str(k): round(v, 3) for k, v in sims.items()}
+    for seg in info["segments"] or ():
+        if seg["spk"] in sims:
+            seg["sim"] = round(sims[seg["spk"]], 3)
 
-    if best is None or best_sim < gate.threshold:
+    if best is None or best_sim < bar:
         # Nobody in this clip looks like the caller. That is the whole-utterance gate's
         # decision to make, not ours — hand back the original and let it judge.
         info["reason"] = "no segment matched the caller"
@@ -351,16 +367,31 @@ def keep_matching_speaker(diarizer, gate, voiceprint, samples, sr=16000):
     # the same caller across three sentences now comes back as ONE cluster at 0.94.
     # So the gap no longer has to reach down to 0.27 — and reaching that far was
     # keeping real intruders, measured at 0.31 sitting 0.37 below the caller.
+    # KEEP_FLOOR and DROP_GAP are both scaled to the bar in use, and BOTH have to be.
+    #
+    # An absolute 0.40 floor discards the caller's own cluster on a microphone where
+    # they score 0.26. But simply lowering the floor is not enough: DROP_GAP keeps any
+    # cluster within 0.40 of the best, and on that same microphone the ENTIRE usable
+    # range is about 0.2 wide (caller 0.26, background 0.05). A gap twice the width of
+    # the range keeps everything, so the trim ran and removed nothing.
+    #
+    # Measured on one live call: caller 0.21-0.26, a video playing in the room
+    # -0.06 to 0.05. Scaling the gap to the bar separates those; leaving it at 0.40
+    # does not.
+    floor = min(KEEP_FLOOR, bar)
+    gap = min(DROP_GAP, max(0.12, bar * 1.5))
     mine = {spk for spk, sim in sims.items()
-            if sim >= gate.threshold
-            or ((best_sim - sim) <= DROP_GAP and sim >= KEEP_FLOOR)}
+            if sim >= bar
+            or ((best_sim - sim) <= gap and sim >= floor)}
     mine.add(best)
     info["kept_speakers"] = len(mine)
-    keep = [samples[int(a*sr):int(b*sr)] for a, b, s in segs
-            if s in mine and (b - a) >= MIN_SEGMENT_S]
+    kept_spans = [(a, b) for a, b, s in segs
+                  if s in mine and (b - a) >= MIN_SEGMENT_S]
+    keep = [samples[int(a*sr):int(b*sr)] for a, b in kept_spans]
     if not keep:
         info["reason"] = "matched speaker had no segment long enough"
         return samples, info
+    _mark_kept(info, kept_spans)
 
     trimmed = np.concatenate(keep).astype("float32")
 
@@ -387,6 +418,11 @@ def keep_matching_speaker(diarizer, gate, voiceprint, samples, sr=16000):
                 log.info("diarize: the kept cluster was itself mixed — trimmed again, "
                          "%.1fs of %.1fs", len(again) / sr, len(trimmed) / sr)
                 trimmed = again.astype("float32")
+                # The second pass ran in the TRIMMED timeline. The inspector draws the
+                # caller's own recording, so map the surviving ranges back through the
+                # concatenation before reporting them — otherwise the highlighted region
+                # slides left by however much the first pass removed.
+                _mark_kept(info, _map_back(kept_spans, mine_sub))
 
     info["kept"] = len(trimmed) / sr
     if info["kept"] < MIN_KEEP_RATIO * total:
@@ -408,6 +444,10 @@ def keep_matching_speaker(diarizer, gate, voiceprint, samples, sr=16000):
                 keep_it = sim_kept >= gate.threshold
         if not keep_it:
             info["reason"] = f"would keep only {info['kept']:.1f}s of {total:.1f}s"
+            # Everything goes to Whisper after all, so nothing may still be drawn as
+            # removed. `keep` means "reached the recogniser", not "matched the caller" —
+            # the similarity is still on every segment for anyone reading the colours.
+            _mark_kept(info, None)
             return samples, info
         log.info("diarize: kept only %.1fs of %.1fs, but it scores %.2f on its own — "
                  "a short turn, not a segmentation error", info["kept"], total,
@@ -415,6 +455,62 @@ def keep_matching_speaker(diarizer, gate, voiceprint, samples, sr=16000):
 
     info["reason"] = "trimmed to the caller"
     return trimmed, info
+
+
+def _record(info: dict, segs) -> None:
+    """Note the boundaries found, in the original clip's timeline.
+
+    Written for the audio inspector: a caller looking at a turn that was cut short
+    needs to see WHERE the cut was, not just that 1.4s went missing. Every segment
+    starts as kept — nothing has been removed at the point this first runs, and a
+    later fail-open must leave the drawing saying so.
+    """
+    info["segments"] = [{"s": round(float(a), 3), "e": round(float(b), 3),
+                         "spk": int(s), "sim": None, "keep": True}
+                        for a, b, s in segs]
+
+
+def _mark_kept(info: dict, spans) -> None:
+    """Record which ranges actually reached the recogniser.
+
+    `spans` of None means all of them — the fail-open paths, where the original audio
+    is returned unchanged however the scoring went.
+
+    Two forms, because they answer different questions. `kept_spans` is what the
+    waveform shades, and it must be exact: the second-pass rescan cuts INSIDE a
+    segment, so a per-segment flag alone would either lose that cut or claim the whole
+    segment went. `keep` is the per-segment summary the tests and the row text read,
+    and a segment counts as kept when most of it survived.
+    """
+    segs = info.get("segments") or ()
+    if spans is None:
+        info["kept_spans"] = None
+        for seg in segs:
+            seg["keep"] = True
+        return
+    info["kept_spans"] = [(round(float(a), 3), round(float(b), 3)) for a, b in spans]
+    for seg in segs:
+        width = seg["e"] - seg["s"]
+        covered = sum(max(0.0, min(seg["e"], b) - max(seg["s"], a)) for a, b in spans)
+        seg["keep"] = width > 0 and covered >= 0.5 * width
+
+
+def _map_back(kept_spans, sub_spans):
+    """Translate ranges in the CONCATENATED audio back to the original timeline.
+
+    The second-pass rescan sees only what the first pass kept, so its offsets are in
+    a timeline with the gaps already closed up. Walking the kept spans in order and
+    accumulating their durations is what re-opens them.
+    """
+    out, cursor = [], 0.0
+    for a, b in kept_spans:
+        span = b - a
+        for sa, sb in sub_spans:
+            lo, hi = max(sa, cursor), min(sb, cursor + span)
+            if hi - lo > 1e-6:
+                out.append((a + (lo - cursor), a + (hi - cursor)))
+        cursor += span
+    return out
 
 
 def _wav_bytes(samples, sr: int) -> bytes:

@@ -1081,6 +1081,396 @@ fact dropped into slot collection abandons the collection — the same rule
 
 ---
 
+## 5.9 Seeing it: the audio inspector, drawn
+
+Every claim in section 5 is a measurement somebody has to take on trust. The docked
+inspector narrowed that a little — it reports whether anything was removed from a turn
+— but "was anything removed?" and "removed from WHERE?" are different questions, and
+only the second one tells you whether the isolation cut the right person.
+
+The full-page inspector (🔬 in the sidebar) draws the turn:
+
+    ████████░░░░░░░░████████████████        green  = you, kept
+      you    stranger      you              red    = another voice
+                                            faded  = never reached the recogniser
+
+Three decisions in it are worth stating, because each was a way to get it quietly wrong.
+
+**The recording is the browser's own copy.** Nothing is sent back from the server. The
+caller's audio stays on the caller's machine, the page still works after the call has
+ended, and there is no second encode to drift out of alignment with the timestamps.
+
+**Colour follows the voiceprint match, not the cluster id.** The diarizer numbers its
+clusters in the order it happens to find them, so colouring by that id makes "green"
+mean the caller only when the caller spoke first. Ordering by similarity makes green
+mean *you* on every turn, which is the whole point of looking.
+
+**Shading follows the exact kept ranges, not a per-segment flag.** The second-pass
+rescan cuts INSIDE a segment — that is what it is for. A per-segment boolean would
+either lose that cut or claim the whole segment went, and both read as a picture of
+something that did not happen. `keep_matching_speaker` therefore reports two things:
+the boundaries it found, and the ranges that survived them, both in the timeline of
+the clip the caller recorded. The second-pass ranges have to be mapped back through
+the concatenation to get there — in the trimmed timeline the gaps are already closed
+up, so 1.0s into it is not 1.0s into the recording on screen.
+
+Clicking a segment plays that moment on its own and says whether its words are in the
+transcript or were removed before transcription. There is deliberately no per-segment
+transcript: Whisper is given the kept audio joined up, so there is only one transcript
+for the turn, and inventing a split of it would be exactly the kind of confident
+fabrication the grounding guard exists to stop.
+
+One thing the page exposes rather than hides: a turn answered from the speculative
+transcript is never analysed as a whole, so it has no segments to draw. It says so.
+
+---
+
+## 5.10 A second recogniser, and what it bought
+
+STT is the dominant cost on the audio path — 1070ms at 3s of speech, against 66ms for
+isolation and 34ms for the speaker gate — and every CPU-side lever had been measured
+and rejected: more CTranslate2 threads is WORSE on an M1 (auto 1691ms, 8 threads
+2212ms, 10 threads 3798ms), and greedy decoding was not reliably faster. The remaining
+unused resource is the GPU already in the machine.
+
+    clip     faster-whisper (CPU int8)   whisper.cpp (Metal)   speedup
+    3.5s                       1562ms                 833ms     1.87x
+    7.0s                       1488ms                 797ms     1.87x
+   10.5s                       1519ms                 876ms     1.73x
+
+Mean WER over the same four clips: 0.25 against 0.29 — so unlike DeepFilterNet, the
+speed is not paid for in accuracy. It is still opt-in, because it needs a system
+package and a 490MB model that a clone does not bring, and this project's premise is
+that cloning and running works.
+
+Two things had to be right for it to be a real second backend rather than a second set
+of rules:
+
+**The hardening is shared, not reimplemented.** `stt.judge()` is now one function that
+both backends pass through. Each guard in it exists because of a specific way a real
+call failed, and a backend that quietly skipped them would reintroduce all of it while
+looking like a bad model rather than a missing check.
+
+**"Unknown" is not "confident".** whisper.cpp enforces the no-speech and log-probability
+thresholds inside the binary — the same values — but does not report what it measured.
+Passing 0.0 for those would read as certainty and switch off the half of the artifact
+list that needs corroboration. `judge()` takes None and knows the difference: phrases a
+caller would never say ("subtitles by the amara.org community") go regardless; phrases
+they might ("bye bye") survive without evidence to the contrary.
+
+Found while building it, and worth recording because the obvious move is the wrong one:
+**pointing `--vad` at one of the three Silero `.onnx` files already in this repo does
+not fail with a message — it ABORTS the process.** whisper.cpp wants Silero in its own
+ggml format. From Python that abort looks like a broken recogniser, not a wrong file.
+
+---
+
+## 5.11 LiveKit, evaluated
+
+Assessed the way Pipecat was, and the verdict has the same shape: **transport only.**
+
+What would genuinely be gained is a WebRTC transport instead of a WebSocket carrying WAV
+blobs — jitter buffering, packet-loss concealment, Opus — plus SIP, so the same agent
+answers a real phone number. The server is Apache-2.0 and self-hostable, which is the
+only reason it can be considered here at all.
+
+What would not:
+
+- **Its noise cancellation and background voice cancellation are Krisp models available
+  only through LiveKit Cloud**; the self-hosting instructions say to remove that plugin.
+  The one feature overlapping what this codebase spent most of its effort on is exactly
+  the one you cannot self-host — and on the recognition path denoising is already
+  measured to hurt here (DeepFilter won 1 of 30 SNR cells, net −400% word recall).
+- **Its turn detector** is a real model and a real idea, but it is bound to the
+  `livekit-agents` session object, ships under the LiveKit Model License rather than an
+  OSI one, and covers 14 languages: Hindi yes, **Telugu no.** Our endpointer learns per
+  caller and `guard.looks_incomplete()` reads the words. Adopting theirs would mean
+  restructuring into their agent loop to get a model that cannot serve the languages the
+  GPU work is for.
+
+`LiveKitTransport` implements the same four methods as everything else at that seam, so
+isolation, the speaker gate, the router and the guard are untouched by it. A test
+asserts none of those services leak into the adapter — checking the code, not the
+docstring, since the docstring has to be free to name them.
+
+---
+
+## 5.12 Turn-taking: a third signal, from the voice
+
+Deciding when the caller has finished has been the most re-tuned thing in this project.
+Three signals were in play, and all three count or read rather than listen:
+
+    how long they have been talking   →  short answers close fast, sentences wait
+    how THIS caller pauses            →  learned per call, from pauses they spoke through
+    what the words say                →  looks_incomplete / looks_complete
+
+The gap they all share: none of them can tell a finished sentence from a caller who
+stopped after a grammatically complete clause to think. "I need an appointment" is a
+whole sentence and also the first half of "I need an appointment tomorrow morning".
+
+The signal nobody was reading is the one every human listener uses. **Pitch and energy
+fall together through the end of an utterance, and are held when the speaker means to
+carry on.** It is not a learned fact about English — it is what happens when a speaker
+runs out of breath support — and it holds in Hindi and Telugu declaratives too. It also
+costs nothing: 1.6ms of numpy on audio that has already been decoded.
+
+**Why not a learned turn detector.** LiveKit ships one and it is the right idea. But it
+is bound to their agent session, ships under a non-OSI licence, and covers 14 languages
+of which Telugu is not one. Training our own needs the real call recordings this project
+does not have yet. Declination is the part of the signal available without data.
+
+**The measurement is why the design looks the way it does.** The first version tested
+the detector against clips of `say` speaking "My name is" — and scored 3/8, calling
+every fragment finished. The fixture was wrong, not the arithmetic: asking a synthesiser
+for a fragment gets you a fragment synthesised AS a complete sentence, with a textbook
+final fall. Speaking the whole sentence and truncating it where the caller would still
+be talking is what produces genuinely mid-utterance audio.
+
+Measured properly, neither half of the signal works alone:
+
+    clip                            score   slope st/s   decay   verdict
+    "My name is Manu Mishra."        10.2         -6.6    0.64   unsure
+    …the same, cut after "is"         7.0         -6.7    0.96   unsure
+    "I would like to book an appt."   8.1         -7.9    0.97   unsure
+    …the same, cut after "an"         5.1         -2.5    0.74   unsure
+    "Yes that is correct."           36.4        -27.8    0.14   finished
+    "What are your charges?"         32.2        -25.2    0.30   finished
+    "I need an appointment" (cut)     3.2         -2.5    0.93   holding
+    "Are you open on Sunday?"         3.1         -0.9    0.78   holding
+
+Read rows one and two: the same slope, −6.6 against −6.7, and opposite answers. Row
+three has a *higher* energy decay than three of the four unfinished clips. Either signal
+alone is a coin toss on those. Combined — `-slope + 10 × (1 − decay)` — the finished
+clips score 8.1 to 36.4 and the unfinished 3.1 to 7.0.
+
+That separates, but by 8.1 against 7.0, and nine clips of synthetic speech is not a
+distribution. **So there is a dead band.** Between 5 and 12 the detector returns
+"unsure", which changes nothing at all. On the calibration set it acts on four clips and
+is wrong on none; the five it declines are exactly the ones where a threshold would have
+been guessing. *Wrong* is the only number that matters here, because this runs on the
+path that decides whether to cut somebody off.
+
+**It is never the decider.** It scales the window by 0.80 or 1.25 within bounds the other
+signals already set, and `holdForMore` — the words — always wins: a caller who says "my
+mobile number is" with a perfect falling contour has still not given us the number. The
+shortening is smaller than the lengthening, because the two mistakes are not symmetrical.
+The first version had 0.75/1.25, which cut by more than it waited and contradicted its
+own docstring; a test caught it.
+
+One honest limitation: a yes/no question reads as "holding" (score 3.1). Rise detection
+is not claimed, because it could not be demonstrated. It costs a slightly longer pause
+before a question is answered, and the words already handle questions — `looks_incomplete`
+returns False on a trailing "?".
+
+---
+
+## 5.13 Keeping the model resident
+
+Timing whisper.cpp against clip length said something odd:
+
+    0.3s of speech → 644ms          10.5s of speech → 589ms
+
+Flat. Almost none of that was the audio — it was spawning a process and reading a 490MB
+model off disk, once per turn, for a decode the GPU finishes almost instantly.
+
+`whisper-server` keeps the model loaded. Measured properly — all three backends warmed,
+best of 5, in one process:
+
+    clip     faster-whisper   whisper-cli   whisper-server   vs faster-whisper
+    0.3s             1420ms         895ms           615ms          2.31x
+    3.5s             1738ms         841ms           621ms          2.80x
+   10.5s             1674ms         903ms           670ms          2.50x
+
+**A correction worth keeping: a curl probe of the same server suggested 4x. Through the
+shipping code path it is 2.3–2.8x.** Two reasons the floor does not vanish — `verbose_json`
+costs ~120ms more to serialise than plain text, and Whisper's encoder runs over a padded
+30-second window whatever the clip length, which is also why 0.3s is no cheaper than 3.5s.
+Measure the thing that ships, not a probe of it.
+
+The server mode is also the more ACCURATE of the two whisper.cpp modes, which matters
+more than the 220ms: `verbose_json` carries per-segment `avg_logprob` and
+`no_speech_prob`, so `judge()` gets real numbers and the confidence gate, the full
+artifact list and language latching all work exactly as they do on faster-whisper. The
+CLI has to pass None and lose half of each.
+
+It stays local. The server is a CHILD of this process, on a free loopback port, killed
+on shutdown — found the hard way, because `atexit` does not fire when uvicorn takes a
+SIGTERM and the first version left a 490MB process listening after the app stopped.
+
+`provider: auto` walks the ladder — server, then CLI, then faster-whisper — so a clone
+runs at the best speed the machine can manage with nothing configured. `device: auto`
+does the same for torch: CUDA when a card is present, otherwise CPU. Never `mps`:
+SpeechBrain's ECAPA fails outright on it, and Apple's GPU is reached through
+whisper.cpp's Metal backend instead, which is a separate process and needs no torch
+device at all.
+
+---
+
+## 5.14 Three things the model was being trusted with, and should not have been
+
+All three have the same shape, and it is the shape of every fix in section 5: the model
+was being ASKED to get something right that a 4B model does not reliably get right, and
+the answer is to decide it before the model is involved.
+
+### The diary
+
+"Is Dr Rao free tomorrow at four?" had exactly two possible answers before this, and both
+were bad. Refuse — the grounding guard blocks any time the pack does not contain. Or
+invent one, which is the documented failure here: asked for a neurologist the clinic does
+not employ, the model quoted "₹500", a real fee belonging to a real doctor.
+
+So the diary goes in the pack, the same way prices and timings already do — some slots
+free, some `FULLY BOOKED`, because being told a day is full is a useful answer and being
+told a booked day is free is worse than a refusal. In a real deployment this block is
+what a calendar or EMR integration writes; as YAML it is the same shape, which is the
+point — nothing above it changes later.
+
+Two matching bugs found while building it, both in the direction that confirms
+appointments nobody can keep:
+
+- **"tomorrow" is a substring of "day after tomorrow."** A first-match day search books
+  the caller for the wrong day and then confirms it, confidently. Longest match wins.
+- **"Dr Rao" matched every doctor**, because the fallback matched on word "dr". A
+  fully-booked dermatologist came back free on the strength of a cardiologist's slot.
+
+`slot_is_free` returns None for "cannot judge" — no diary, no day named, no clock time —
+and every caller treats that as permission. Most packs have no diary at all, and refusing
+their bookings would break every other vertical in this repo.
+
+**A clash is answered, not silently re-asked.** Dropping the slot alone asks "what day and
+time would suit you?" of somebody who just answered exactly that, which reads as not
+listening and is how this codebase once produced a twenty-turn call that stored one word.
+Now: *"That one is already taken, I'm afraid. Dr Rao has 4:00 pm or 4:30 pm tomorrow."* —
+for the day they asked about, since offering today's 5pm to someone asking about tomorrow
+is a different question rather than an alternative.
+
+And the trade-off this project keeps meeting: **every time in the diary widens
+`allowed_numbers` and weakens the grounding guard.** "4" being a real slot means "4" can
+no longer be caught as invented. Availability is worth that; a longer list would not be.
+
+### Who the call goes to
+
+One escalation was doing two jobs. A caller describing chest pain needs clinical staff and
+the ambulance number now. A caller who is angry, wants a refund, or is asking for whoever
+is in charge needs the **manager** — and hearing "let me connect you to a team member" is
+precisely what makes that caller repeat themselves, louder.
+
+Two keyword lists, manager checked first, so "I want your manager about this emergency" is
+a manager call whatever else is in it. The clinic names its manager and gives her direct
+number in the transfer line, because a transfer that drops must leave a way back. Every
+other pack inherits the routing from `_base.yaml`.
+
+### The domain guardrail
+
+The model self-declares `kind: out_of_scope`, and that mostly works — "mostly" being the
+same word that made every other rule in this file necessary. Asked to write a poem, a 4B
+model writes a poem. Asked to ignore its instructions, it often obliges. Asked who the
+prime minister is, it answers, in the voice of a clinic, sometimes wrongly. **The
+grounding guard cannot catch any of it, because none of it contains an ungrounded
+number** — the same blind spot as the invented-services bug, fixed the same way.
+
+Two classes, treated differently on purpose:
+
+- **Attempts to change what the agent is** — "ignore previous instructions", "you are
+  ChatGPT", "pretend you are…" — are refused unconditionally. No caller phrases a real
+  request that way.
+- **Whole other subjects** — code, capitals, cricket scores, recipes — are refused only
+  when the turn shows no sign of being about the business, checked against the pack's own
+  vocabulary and knowledge tags rather than a list written in the engine.
+
+That second condition is the whole design. `cricket` and `script` are both on the marker
+lists, and *"do you do a cricket physio programme"* and *"can I get my script refilled"*
+are both legitimate — in Indian English a prescription is routinely called a script. The
+cost is asymmetric in the direction this codebase keeps re-learning: turning away a real
+caller is far worse than answering one silly question.
+
+It runs in `begin_user`, before the model, so a refusal costs no generation at all.
+
+---
+
+## 5.15 One ladder, two passes, and a dial
+
+Three changes that are really one: turn-taking stopped being three implementations and
+became a module, and once it was a module the other two became small.
+
+### The ladder had drifted, silently
+
+"Have they stopped talking" was being decided in three places that could not see each
+other — the browser endpointer, the flags `server.py` pushed to it, and
+`transport.Endpointer`. They had already diverged. The telephony endpointer was a flat
+800/1200ms with **no learned pause, no per-slot extra and no prosody**, so the first
+caller on a real phone line would have been endpointed by exactly the rules two rounds
+of live testing tuned away from ("it breaks my long sentences").
+
+`zensuvidha/turn.py` holds the numbers once. The browser is *sent* them on connect and
+evaluates them; the phone endpointer imports them. A test runs the browser's fallback
+copy in Node and fails if it disagrees with Python — proven by changing one constant.
+
+The order of evidence is the design, and each step is a bug that was fixed:
+
+    the WORDS    looks_incomplete / looks_complete   ← outranks everything
+    a FILLER     "um", "मतलब", "यानी"                ← new
+    the VOICE    the pitch contour
+    the CALLER   how long THIS person pauses
+    the CLOCK    how long they have been talking
+
+**The filler signal is what silence cannot see.** A caller trailing off on "um" has not
+finished — they are searching for the next word, and the gap looks identical to a
+finished sentence. This is the signal ElevenLabs' turn-taking model reads and ours did
+not. It is deliberately narrower than the existing `_HESITATIONS` list: "haan" and
+"ठीक" belong there and *not* here, because a bare "yes" is a complete answer and
+treating it as hesitation would make every confirmation in every booking wait longer.
+
+It also earns *less* time than a dangling postposition — weaker evidence, smaller
+extension — and the two never stack, or one hesitation is charged twice.
+
+### Two-pass ASR
+
+The speculative frame taken at ~450ms of silence exists to size the endpoint window and
+show live text. Three turn-taking signals are computed from it and nothing else, and all
+three were gated behind a full 621ms recognition — so the endpointer could not react
+until the caller had already been silent for most of the window it was trying to size.
+
+Wispr Flow runs a ~120M realtime model for partials and a large one for the commit. Same
+idea here, and the machinery already existed; it was just running `small` twice.
+
+    partial (tiny)   171 ms
+    commit  (small)  722 ms      4.2x
+
+The partial **never** reaches the LLM, the guard, or the transcript — `tiny` is
+measurably worse and its errors must not reach a booking. `Session.transcribe(partial=True)`
+also returns before the language-lock code, for the same reason a speculative frame
+never enrols a voiceprint: a guess must not move call-wide state.
+
+### The eagerness dial
+
+The one knob an operator should have. A clinic taking bookings from elderly callers
+wants Patient; a restaurant taking table numbers wants Eager.
+
+    eagerness   short   long   filler   hold   settled
+    eager        560     840    1240    1560     400
+    normal       800    1200    1700    2100     400
+    patient     1160    1740    2390    2910     400
+
+It **scales** the ladder rather than replacing it, so every measured rule still holds —
+and a test asserts the ordering of the signals is identical on all three settings. Note
+`settled` is not scaled: "the words are finished and nothing can follow" is a fact about
+the transcript, not a preference, and making a completed phone number wait longer is
+just a slower call.
+
+### Speculative reply, measured instead of configured
+
+It was built, shipped, and switched off, because on one local Ollama it made turns 2.6x
+SLOWER — requests serialise per model, so the guess *queued in front of* the real
+generation. Whether that happens is a property of the machine, not of the config file.
+
+`speculative_reply: auto` now runs one short generation and then two together at
+startup. Under 1.5x the single means they genuinely overlap and it switches on; at ~2x
+they serialise and it stays off, saying which in the log. On this laptop it stays off,
+correctly, and on a GPU box with continuous batching it will not.
+
+---
+
 ## 6. Why a call can never wedge
 
 The client enters "thinking" the instant it ships audio, and only leaves on a reply. So
@@ -1183,9 +1573,13 @@ tell which ones carry a number behind them.
 - **Every remaining threshold is calibrated on synthetic speech.** A real microphone has
   already proved one of them wrong by more than two-fold. Real recordings are the single
   highest-value missing input to this project.
-- **No phone number yet.** Pipecat is the route — Exotel and Plivo are built in — but it has
-  no diarization or voice isolation at all, so adopting it means re-homing this work into
-  their processor model.
+- **No phone number yet.** Two routes exist at the transport seam and neither has been run
+  against a live carrier: Pipecat (Exotel and Plivo built in) and LiveKit (SIP, and a
+  self-hostable Apache-2.0 server). Neither brings diarization or voice isolation — that
+  work stays on this side either way.
+- **The second recogniser has only been measured on synthetic speech.** whisper.cpp is
+  1.7-1.9x faster with slightly better WER on `say` clips; whether that holds on a real
+  microphone is unmeasured, and this project has been wrong about exactly that before.
 
 ---
 

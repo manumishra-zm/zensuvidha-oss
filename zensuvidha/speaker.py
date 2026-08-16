@@ -119,6 +119,7 @@ class SpeakerGate:
     def __init__(self, cfg: dict, backend: str = "speechbrain"):
         self.backend = backend
         self.threshold = float(cfg.get("speaker_threshold", 0.55))
+        self._caller_scores = []               # what THIS caller scores on THIS mic
         self._lock = threading.Lock()      # inference is not guaranteed concurrent-safe
         if backend == "resemblyzer":
             from resemblyzer import VoiceEncoder
@@ -177,6 +178,62 @@ class SpeakerGate:
             return 0.0
         return float(np.dot(np.asarray(a), np.asarray(b)))
 
+    # ---- what this caller ACTUALLY scores, on THIS microphone ---------------------
+    # The fixed 0.55 was calibrated on macOS `say` voices: same speaker 0.867, closest
+    # impostor 0.429. On a real microphone it is wrong by more than two-fold. Measured
+    # on one live call in a 39.6dB room:
+    #
+    #     the caller           0.21  0.22  0.26        ← every turn BELOW 0.55
+    #     background video    -0.06  0.04  0.05
+    #
+    # The separation is obvious — roughly 0.2 between the two — and completely invisible
+    # to an absolute threshold that sits above both. So the gate never matched anyone,
+    # never became "proven", and correctly refused to refuse: which is why a video
+    # playing in the room got transcribed and answered.
+    #
+    # The diarizer already solved this shape with a RELATIVE bar (DROP_GAP). This is the
+    # same idea for the whole-utterance gate: learn what this caller scores here, and
+    # refuse what is clearly below it.
+    ADAPT_AFTER = 3        # samples before the learned bar is trusted at all
+    ADAPT_MARGIN = 0.12    # how far below the caller's own median counts as somebody else
+    ADAPT_FLOOR = 0.08     # …never go lower than this, whatever the print looks like
+
+    def note_caller_score(self, sim) -> None:
+        """Record a similarity that belonged to the CALLER.
+
+        Fed only from corroborated turns — the engine calls this once a voice has earned
+        the print — because learning from every accepted turn during the provisional
+        phase would let one stray voice drag the bar down onto itself.
+        """
+        if sim is None:
+            return
+        # Defensive: this class is subclassed by stubs and by custom gates that set up
+        # their own state. A new required attribute broke 35 tests the first time —
+        # exactly the "a new required thing broke every adapter" mistake the denoise
+        # kwarg made once already.
+        if not hasattr(self, "_caller_scores"):
+            self._caller_scores = []
+        self._caller_scores.append(float(sim))
+        del self._caller_scores[:-12]          # recent behaviour, not the whole call
+
+    def effective_threshold(self) -> float:
+        """The bar to actually use for this call.
+
+        Only ever LOOSER than the configured value, never stricter. On a good microphone
+        the caller scores 0.85, the learned bar computes to 0.73, and the configured 0.55
+        wins — nothing changes. On a poor one the caller scores 0.24, the bar drops to
+        0.12, and a background voice at 0.04 is finally refusable. Tightening on the
+        strength of a few samples would risk silencing the real caller, which is the
+        failure this whole file is organised around.
+        """
+        scores = getattr(self, "_caller_scores", None)
+        if not scores or len(scores) < self.ADAPT_AFTER:
+            return self.threshold
+        import statistics
+        med = statistics.median(scores)
+        learned = max(self.ADAPT_FLOOR, med - self.ADAPT_MARGIN)
+        return min(self.threshold, learned)
+
     def judge(self, voiceprint, audio):
         """(accept, similarity, embedding) — `matches` plus the vector it computed.
 
@@ -191,7 +248,7 @@ class SpeakerGate:
         if vec is None:
             return True, None, None               # too short to judge → give the benefit
         sim = self.similarity(voiceprint, vec)
-        return sim >= self.threshold, sim, vec
+        return sim >= self.effective_threshold(), sim, vec
 
     def matches(self, voiceprint, audio):
         """(accept, similarity). Accepts when we cannot judge — a false reject silences

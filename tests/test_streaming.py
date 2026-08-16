@@ -753,8 +753,15 @@ def test_the_client_prefers_the_conservative_hint():
     early is the one that can chop a sentence."""
     import pathlib
     js = pathlib.Path("web/index.html").read_text()
-    assert "if(settled && !holdForMore) return SETTLED_MS;" in js, (
-        "the early close must be gated on holdForMore being false")
+    # Asserted as a PROPERTY rather than a literal line: the early close must be gated
+    # on every signal that says "not finished". It now has two — the words and a
+    # trailing filler — and pinning the old exact string would have failed the moment
+    # the second was added, while a client that dropped one of them would still pass.
+    line = next((ln.strip() for ln in js.splitlines()
+                 if "settled" in ln and "return TURN.settled_ms" in ln), None)
+    assert line, "the settled early-close is gone"
+    for guard in ("!holdForMore", "!fillerHold"):
+        assert guard in line, f"the early close is not gated on {guard}: {line}"
 
 
 def test_the_settled_hint_is_cleared_not_latched():

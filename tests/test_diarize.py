@@ -408,3 +408,114 @@ def test_a_true_sliver_is_still_refused():
     out, info = keep_matching_speaker(d, WindowGate(), WPRINT, audio, SR)
     assert out is audio
     assert "would keep only" in info["reason"]
+
+
+# --------------------------------------------------------------------------- #
+# what the inspector draws — the segments and the ranges that survived them
+#
+# The waveform in the UI is the caller's OWN recording, so every timestamp reported
+# here has to be in THAT timeline. A boundary reported in the trimmed timeline slides
+# left by however much was removed before it, and the highlight then sits over the
+# wrong words — which reads as the isolation cutting the wrong person.
+# --------------------------------------------------------------------------- #
+def test_segments_are_reported_with_the_speaker_and_the_score():
+    audio = np.concatenate([lvl(CALLER_LVL, 3.0), lvl(OTHER_LVL, 2.0)])
+    d = StubDiarizer([(0.0, 3.0, 0), (3.0, 5.0, 1)])
+    _out, info = keep_matching_speaker(d, WindowGate(), WPRINT, audio, SR)
+    segs = info["segments"]
+    assert [(s["s"], s["e"], s["spk"]) for s in segs] == [(0.0, 3.0, 0), (3.0, 5.0, 1)]
+    assert segs[0]["keep"] and not segs[1]["keep"], "the stranger is drawn as kept"
+    assert segs[0]["sim"] > segs[1]["sim"], "the scores are not attached per speaker"
+    assert info["kept_spans"] == [(0.0, 3.0)]
+
+
+def test_nobody_looked_is_not_the_same_as_one_segment():
+    """None means diarization never ran. Drawing that as a single full-width kept
+    segment would claim the audio was checked and cleared when it never was."""
+    audio = lvl(CALLER_LVL, 3.0)
+    _out, info = keep_matching_speaker(None, None, None, audio, SR)
+    assert info["segments"] is None and info["kept_spans"] is None
+
+
+def test_a_fail_open_never_draws_anything_as_removed():
+    """The ratio guard hands the WHOLE clip to Whisper. If the drawing still showed the
+    stranger's segment greyed out, the operator would be told something was filtered at
+    the exact moment nothing was."""
+    audio = np.concatenate([lvl(CALLER_LVL, 0.5), lvl(OTHER_LVL, 9.0)])
+    d = StubDiarizer([(0.0, 0.5, 0), (0.5, 9.5, 1)])
+    out, info = keep_matching_speaker(d, WindowGate(), WPRINT, audio, SR)
+    assert out is audio
+    assert info["kept_spans"] is None
+    assert all(s["keep"] for s in info["segments"]), info["segments"]
+
+
+def test_the_second_pass_reports_boundaries_in_the_original_timeline():
+    """The rescan runs on the already-trimmed audio, where the gaps have been closed
+    up. 1.0s into THAT is not 1.0s into the recording the caller is looking at."""
+    from zensuvidha.diarize import _map_back
+
+    # first pass kept 2-5s and 8-10s; the rescan then keeps 1-4s of that 5s result,
+    # which is 3-5s and 8-9s of the original.
+    assert _map_back([(2.0, 5.0), (8.0, 10.0)], [(1.0, 4.0)]) == [(3.0, 5.0), (8.0, 9.0)]
+    # a rescan that keeps everything must map back to exactly what went in
+    assert _map_back([(2.0, 5.0), (8.0, 10.0)], [(0.0, 5.0)]) == [(2.0, 5.0), (8.0, 10.0)]
+
+
+def test_the_merged_cluster_rescan_moves_the_drawn_region_too():
+    """End to end through the path the mapping exists for: the second trim must be
+    visible in the drawing, and still inside the clip."""
+    audio = np.concatenate([lvl(CALLER_LVL, 5.0), lvl(OTHER_LVL, 2.0),
+                            lvl(OTHER_LVL * 0.4, 3.0)])
+    d = StubDiarizer([(0.0, 7.0, 0), (7.0, 10.0, 1)])
+    _out, info = keep_matching_speaker(d, WindowGate(), WPRINT, audio, SR)
+    spans = info["kept_spans"]
+    assert spans, info
+    assert sum(b - a for a, b in spans) < 6.0, f"the second trim is not drawn: {spans}"
+    assert all(0.0 <= a < b <= info["total"] + 1e-6 for a, b in spans), spans
+
+
+def test_isolation_uses_the_bar_the_gate_actually_learned():
+    """Reading `gate.threshold` directly meant isolation kept judging against the
+    synthetic 0.55 while the gate itself had adapted to 0.11 for this microphone. Every
+    cluster then scored "not the caller", nothing was ever trimmed, and switching Voice
+    Isolation on did precisely nothing — the feature was silently inert on exactly the
+    hardware it was needed for."""
+    # The REAL numbers from one live call, not the stub's synthetic 0.85/0.20: the
+    # caller measured 0.21-0.26 and a video playing in the room -0.06 to 0.05. Modelled
+    # directly, because the whole point is a microphone where every absolute constant in
+    # this file is above where the caller lands.
+    class RealMic(WindowGate):
+        threshold = 0.55
+
+        def effective_threshold(self):
+            return 0.11                      # what the gate learned on this call
+
+        def similarity(self, a, b):
+            # first cluster is the caller, second is the room
+            mid = (CALLER_LVL + OTHER_LVL) / 2
+            return 0.24 if float(np.asarray(b)[0]) > mid else 0.05
+
+        def embed(self, audio, min_seconds=0.6):
+            import io
+
+            import soundfile as sf
+            data, _sr = sf.read(io.BytesIO(audio)) if isinstance(audio, (bytes, bytearray)) \
+                else (np.asarray(audio), SR)
+            data = np.asarray(data, dtype="float32").reshape(-1)
+            return None if not data.size else np.array([float(np.max(np.abs(data)))])
+
+    audio = np.concatenate([lvl(CALLER_LVL, 3.0), lvl(OTHER_LVL, 2.0)])
+    d = StubDiarizer([(0.0, 3.0, 0), (3.0, 5.0, 1)])
+    out, info = keep_matching_speaker(d, RealMic(), np.array([1.0]), audio, SR)
+    assert out is not audio, "nothing was trimmed: %s" % info
+    assert info["kept_spans"] == [(0.0, 3.0)], (
+        "the room was kept alongside the caller: %s" % info)
+
+
+def test_a_gate_without_the_learned_bar_still_works():
+    """speaker.py is pluggable — a custom gate that predates the adaptive threshold must
+    keep working on its configured value rather than raising."""
+    audio = np.concatenate([lvl(CALLER_LVL, 3.0), lvl(OTHER_LVL, 2.0)])
+    d = StubDiarizer([(0.0, 3.0, 0), (3.0, 5.0, 1)])
+    out, _info = keep_matching_speaker(d, WindowGate(), WPRINT, audio, SR)
+    assert out is not audio

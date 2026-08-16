@@ -104,3 +104,47 @@ def test_a_failed_speculation_falls_back_to_generating_normally():
 
 def test_the_feature_can_be_switched_off():
     assert isinstance(server.SPECULATIVE_REPLY, bool)
+
+
+# --------------------------------------------------------------------------- #
+# the shortcut must not be a way past the speaker gate
+# --------------------------------------------------------------------------- #
+def test_a_commit_that_adopts_a_guess_still_judges_the_voice():
+    """THE HOLE THIS CLOSES. The gate deliberately does not run on a speculative frame
+    — enrolling from a 450ms fragment once locked a caller out of their own call. But a
+    commit ADOPTS that guess and answers it, and the client does not resend the
+    recording. So every turn taken by the shortcut reached the LLM without any voice
+    check at all: a colleague or a television speaking in the room would be answered as
+    the caller, on exactly the turns the gate exists to refuse.
+
+    The guess stops being a guess at commit, which is what makes gating it both safe
+    and necessary."""
+    src = inspect.getsource(server)
+    commit_at = src.index('elif mtype == "commit"')
+    launch_at = src.index("await launch(text, text", commit_at)
+    window = src[commit_at:launch_at]
+    assert "check_speaker" in window, (
+        "a committed speculative transcript reaches launch() without the speaker gate")
+    assert "_dropped(sock" in window, (
+        "a refused commit must tell the client, or the UI hangs on 'thinking'")
+
+
+def test_the_stashed_audio_is_cleared_wherever_the_guess_is():
+    """A recording left behind outlives the transcript it belongs to — the next commit
+    would judge the wrong utterance's voice, and the caller's audio would sit in memory
+    with nothing pointing at it."""
+    src = inspect.getsource(server)
+    # Every place the guess transcript is dropped drops the recording — and the pitch
+    # verdict — with it. A contour left behind would be reported against the NEXT turn,
+    # which is the same latching bug this file has already fixed twice.
+    assert src.count('spec["text"] = spec["audio"] = spec["tone"] = None') >= 4, (
+        "a path clears the guess transcript but keeps its audio or its contour")
+
+
+def test_voiding_the_reply_does_not_throw_away_the_recording():
+    """_void_speculation is called from INSIDE the speculative branch, right after a
+    fresh guess is stored. If it cleared the audio, every commit would find None and
+    the gate would go back to never running — silently, with all tests passing."""
+    src = inspect.getsource(server._void_speculation)
+    assert 'spec["audio"] = None' not in src, (
+        "_void_speculation clears the audio the commit-time speaker gate needs")

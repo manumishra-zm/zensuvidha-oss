@@ -153,7 +153,10 @@ def prepare(raw, *, decode, denoiser=None, diarizer=None, gate=None, voiceprint=
     # apart before it trusts a clip enough to learn the caller's identity from it.
     info = {"isolated": False, "denoised": False, "snr_db": None,
             "speakers": None, "kept_s": None, "total_s": None, "reason": None,
-            "iso_ms": 0.0, "den_ms": 0.0}
+            "iso_ms": 0.0, "den_ms": 0.0,
+            # Where the boundaries were and what survived them, for the inspector's
+            # waveform. None means diarization never ran on this turn.
+            "segments": None, "kept_spans": None}
     try:
         import time
 
@@ -188,6 +191,8 @@ def prepare(raw, *, decode, denoiser=None, diarizer=None, gate=None, voiceprint=
                 info["speakers"] = dia.get("speakers", 1)   # counted, for real
                 info["reason"] = dia.get("reason")
                 info["kept_s"] = round(dia.get("kept", 0.0), 2)
+                info["segments"] = dia.get("segments")
+                info["kept_spans"] = dia.get("kept_spans")
                 if trimmed is not work and (info["speakers"] or 1) > 1:
                     work, changed, info["isolated"] = (
                         np.asarray(trimmed, dtype="float32").reshape(-1), True, True)

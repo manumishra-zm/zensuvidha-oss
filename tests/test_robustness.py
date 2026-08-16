@@ -903,3 +903,31 @@ def test_the_room_is_measured_even_with_no_denoiser_installed():
     assert noisy_info["snr_db"] is not None
     assert noisy_info["snr_db"] < clean_info["snr_db"], "the reading is not responsive"
     assert not clean_info["denoised"] and not noisy_info["denoised"]
+
+
+# --------------------------------------------------------------------------- #
+# who may read caller PII
+# --------------------------------------------------------------------------- #
+def test_a_relayed_request_is_not_treated_as_local():
+    """`client.host == 127.0.0.1` means "is the operator" only while nothing forwards
+    to us. Put nginx, Caddy, ngrok or `kubectl port-forward` on the same box and EVERY
+    request on earth arrives from 127.0.0.1 — and /transcripts starts serving callers'
+    names and phone numbers to the internet.
+
+    A forwarding header is trivially forgeable, which is exactly why it is used this
+    way round: its PRESENCE is taken as proof the request was relayed, never as proof
+    of who sent it."""
+    from zensuvidha import server
+
+    class _Req:
+        def __init__(self, host="127.0.0.1", headers=None):
+            self.client = type("C", (), {"host": host})()
+            self.headers = headers or {}
+            self.query_params = {}
+
+    assert server._authorised(_Req()), "a genuinely local operator was locked out"
+    for header in ("x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host"):
+        req = _Req(headers={header: "203.0.113.9"})
+        assert not server._authorised(req), (
+            "a request relayed via %s was accepted as local" % header)
+    assert not server._authorised(_Req(host="10.0.0.5"))

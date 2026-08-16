@@ -732,3 +732,135 @@ def test_the_rescue_reason_is_recorded_for_the_inspector_and_consumed_once():
     s._last_rescue = None                      # server consumes it after one insight
     s.check_speaker("caller", heard="8920429057")
     assert s._last_rescue is None, "an ACCEPTED turn must not report a rescue"
+
+
+# --------------------------------------------------------------------------- #
+# what this caller scores on THIS microphone
+# --------------------------------------------------------------------------- #
+class _Bare(SpeakerGate):
+    """The scoring logic without an encoder — thresholds are arithmetic, not models."""
+
+    def __init__(self, threshold=0.55):
+        self.backend = "stub"
+        self.threshold = threshold
+        self._caller_scores = []
+
+
+def test_a_real_microphone_moves_the_bar_to_where_the_caller_actually_is():
+    """MEASURED on one live call, 39.6dB room:
+
+        the caller           0.21  0.22  0.26     ← every turn BELOW the 0.55 threshold
+        a video in the room -0.06  0.04  0.05
+
+    The separation is about 0.2 and completely invisible to an absolute bar sitting
+    above both. So the gate never matched anyone, never became proven, and correctly
+    refused to refuse — which is why background audio was transcribed and answered."""
+    g = _Bare()
+    for s in (0.22, 0.26, 0.21):
+        g.note_caller_score(s)
+    t = g.effective_threshold()
+    assert 0.21 >= t and 0.26 >= t, f"the caller is still refused at {t:.2f}"
+    assert 0.05 < t and -0.06 < t, f"the background video still passes at {t:.2f}"
+
+
+def test_it_never_becomes_stricter_than_the_configured_threshold():
+    """Tightening on the strength of a handful of samples would silence the real caller,
+    which is the failure this whole file is organised around. It may only ever loosen
+    toward what the microphone really produces."""
+    g = _Bare()
+    for s in (0.85, 0.88, 0.83):
+        g.note_caller_score(s)
+    assert g.effective_threshold() == 0.55
+
+
+def test_it_waits_for_evidence_before_moving():
+    g = _Bare()
+    assert g.effective_threshold() == 0.55
+    g.note_caller_score(0.24)
+    assert g.effective_threshold() == 0.55, "one sample moved the bar"
+
+
+def test_a_single_bad_sample_cannot_drag_the_bar_down():
+    """The median, not the mean — one outlier is exactly what a half-caught utterance
+    looks like."""
+    g = _Bare()
+    for s in (0.62, 0.65, 0.02, 0.60):
+        g.note_caller_score(s)
+    assert g.effective_threshold() > 0.3, g.effective_threshold()
+
+
+def test_the_bar_has_an_absolute_floor():
+    """A print that has degenerated to scoring near zero must not license accepting
+    literally anything."""
+    g = _Bare()
+    for s in (0.01, 0.02, 0.0):
+        g.note_caller_score(s)
+    assert g.effective_threshold() >= g.ADAPT_FLOOR
+
+
+def test_only_accepted_turns_teach_it():
+    """Learning from refused turns would let a stranger drag the bar down onto their own
+    score, which is the one way an adaptive threshold can be worse than a fixed one."""
+    import inspect
+
+    from zensuvidha.orchestrator import Session
+    src = inspect.getsource(Session.check_speaker)
+    at = src.index("note_caller_score")
+    ok_at = src.index("self._gate_proven = True")
+    assert ok_at < at, "the score is learned outside the accepted branch"
+
+
+def test_the_calibration_is_not_circular():
+    """MY OWN BUG, caught by replaying the live call through it.
+
+    The first version learned only from turns the gate ACCEPTED. On this caller's
+    microphone their own turns score 0.21-0.26 against a 0.55 bar, so nothing was ever
+    accepted, so nothing was ever learned, so the bar never moved — the adaptation was
+    dead code in precisely the situation it was built for.
+
+    The same trap catches the gate's other two escape routes, which is why none of them
+    fired either: widening needs PROVISIONAL_FLOOR 0.40, rival adoption needs the same
+    voice twice. Every mechanism is keyed to an absolute number that sits above where
+    this microphone lands.
+    """
+    g = _Bare()
+    for sim in (0.22, 0.26, 0.21):
+        # the engine answers these (unproven → fails open) and calibrates from that
+        g.note_caller_score(sim)
+    assert g.effective_threshold() < 0.21, (
+        "the bar never moved: %s" % g.effective_threshold())
+
+
+def test_after_calibrating_the_caller_is_kept_and_the_room_is_not():
+    """The whole point. Replayed from one live call with a video playing in the room."""
+    g = _Bare()
+    for sim in (0.22, 0.26, 0.21):
+        g.note_caller_score(sim)
+    bar = g.effective_threshold()
+    for caller in (0.24, 0.23, 0.21):
+        assert caller >= bar, f"the caller was refused at {caller}"
+    for room in (0.05, 0.04, -0.06):
+        assert room < bar, f"the background video passed at {room}"
+
+
+def test_a_clip_with_more_than_one_voice_teaches_it_nothing():
+    """A mixed clip scores like a misjudged caller. Calibrating on one would move the
+    bar toward whoever interrupted them — the same rule that stops a mixed clip widening
+    the print, for the same reason."""
+    import inspect
+
+    from zensuvidha.orchestrator import Session
+    src = inspect.getsource(Session._note_caller_score)
+    assert "speakers or 1" in src and "> 1" in src, (
+        "a multi-voice clip is allowed to calibrate the gate")
+
+
+def test_the_engine_calibrates_from_turns_it_answers():
+    """Both places a turn is concluded to be the caller must feed it, or the deadlock
+    returns by whichever route was missed."""
+    import inspect
+
+    from zensuvidha.orchestrator import Session
+    src = inspect.getsource(Session.check_speaker)
+    assert src.count("_note_caller_score") >= 2, (
+        "only one of the accepted paths calibrates the gate")
