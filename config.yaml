@@ -2,13 +2,85 @@
 # Swap providers/models freely; the engine is provider-agnostic.
 
 stt:
-  provider: faster_whisper   # faster_whisper | none
+  provider: auto             # auto | whisper_cpp_server | whisper_cpp | faster_whisper | none
+                             #   auto tries the best thing THIS machine has, in order,
+                             #   and silently falls back. Nothing to configure, nothing
+                             #   to deploy. MEASURED, all warmed, best of 5 in one
+                             #   process, on an M1 Pro with the small model:
+                             #
+                             #     clip    faster-whisper  whisper-cli  whisper-server
+                             #     0.3s            1420ms       895ms          615ms
+                             #     3.5s            1738ms       841ms          621ms
+                             #    10.5s            1674ms       903ms          670ms
+                             #
+                             #   The SERVER keeps the model resident, so it pays neither
+                             #   the process spawn nor the 490MB load per turn — and it
+                             #   is the only whisper.cpp mode that reports confidence
+                             #   numbers, so the artifact guard and language latching
+                             #   work there exactly as on faster-whisper. It is started
+                             #   as a CHILD of this process on a free loopback port and
+                             #   killed on exit: local, nothing left listening.
+                             #
+                             #   A curl probe suggested 4x; the real figure measured
+                             #   through the shipping code path is 2.3-2.8x. Whisper's
+                             #   encoder runs on a padded 30s window whatever the clip
+                             #   length, which is also why 0.3s is not cheaper than 3.5s.
+  # ---- two-pass: a tiny model for the GUESS, the accurate one for the TURN ----------
+  # The speculative frame taken at ~450ms of silence exists to size the endpoint window
+  # and show live text — three turn-taking signals are computed from it and nothing else
+  # (looks_incomplete, looks_complete, the pitch contour). All three were gated behind a
+  # full 621ms recognition, so the endpointer could not react until the caller had
+  # already been silent for most of the window it was trying to size.
+  # The partial NEVER reaches the LLM, the guard, or the transcript — `tiny` is
+  # measurably worse and its errors must not reach a booking.
+  # Set to null to use one model for both passes.
+  partial_model: models/whispercpp/ggml-tiny.bin
+  partial_provider: null     # null = same ladder as `provider` (auto)
+  whispercpp_url: null       # point at an already-running whisper-server instead of
+                             #   spawning one (e.g. http://127.0.0.1:8080)
+  whispercpp_server_bin: null  # null = find `whisper-server` on PATH
+  whispercpp_boot_timeout: 90  # seconds to wait for the model to load at startup
+  device: auto               # auto | cpu | cuda — auto picks CUDA when a card is present,
+                             #   else CPU. NOT mps: measured, SpeechBrain's ECAPA fails
+                             #   outright on it and CTranslate2 does not use it. Apple's
+                             #   GPU is reached through whisper.cpp's Metal backend, which
+                             #   is a separate process and needs no torch device.
+  # ---- whisper_cpp: the same Whisper model, decoded on the GPU already in the box ----
+  # STT is the dominant cost on the audio path (1070ms at 3s of speech, against 66ms for
+  # isolation and 34ms for the speaker gate) and every CPU-side lever has been measured
+  # and rejected — more CTranslate2 threads is WORSE on an M1 (auto 1691ms, 8 threads
+  # 2212ms, 10 threads 3798ms) and greedy decoding was not reliably faster. The one
+  # unused resource is the GPU, and whisper.cpp is how to reach it without a CUDA box.
+  #
+  # MEASURED here (M1 Pro, small, best of 2 warm runs):
+  #     clip     faster-whisper   whisper.cpp   speedup
+  #     3.5s            1562ms         833ms      1.87x
+  #     7.0s            1488ms         797ms      1.87x
+  #    10.5s            1519ms         876ms      1.73x
+  #   …and mean WER 0.25 vs 0.29 over the same clips, so it is not paid for in accuracy.
+  #
+  # OPT-IN, not the default: it needs `brew install whisper-cpp` plus a 490MB model that
+  # a git clone does not bring, and this project's premise is that cloning and running
+  # works. Enable with:  bash scripts/download_whispercpp.sh  then provider: whisper_cpp
+  # Falls back to faster_whisper by itself if the binary or the model is missing.
+  whispercpp_bin: null       # null = find `whisper-cli` on PATH
+  whispercpp_model: models/whispercpp/ggml-small.bin
+  whispercpp_vad_model: null # null = look for models/whispercpp/ggml-silero*.bin.
+                             #   It must be whisper.cpp's OWN ggml build — pointing this
+                             #   at one of the three Silero .onnx files already in this
+                             #   repo does not error, it ABORTS the process (SIGABRT),
+                             #   which reads as a broken recogniser rather than a wrong file.
+  whispercpp_threads: null   # null = performance-core count (2-8). MEASURED on this M1:
+                             #   piling on threads makes it WORSE — CTranslate2 went
+                             #   auto 1691ms, 4 threads 1601ms, 8 threads 2212ms, 10
+                             #   threads 3798ms, because the efficiency cores drag.
+  whispercpp_timeout: 60     # a wedged child must never hold a threadpool worker forever
   model: small               # tiny | base | small  (small ≈ 460MB, best CPU accuracy)
   language: null             # null = auto-detect the spoken language (multilingual). denoise+VAD guard the noise mis-fire; force "en"/"hi" to pin.
   compute_type: int8         # int8 (CPU) | float16 (GPU)
   beam_size: 3               # beam search width (5=most accurate/slow, 1=greedy/fastest). 3 = balanced.
   fast_beam_size: 1          # beam used in "fast" mode (greedy = lowest latency)
-  device: cpu                # cpu | cuda (GPU) — see config.gpu.yaml
+
   vad_filter: true           # strip silence before STT → prevents "5,5,5…" hallucinations
   denoise: false             # OFF, and MEASURED: noisereduce changes the word-error rate by
                              #   0.00 across clean / white / fan-rumble / babble, down to 0dB SNR
