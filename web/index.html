@@ -732,6 +732,9 @@ function stopAgentAudio(){
 
 // ---------- microphone + VAD (hands-free auto turn-taking) ----------
 let callActive=false, micStream=null, micSource=null, micNode=null, micAnalyser=null, workletReady=false;
+let micActual=null;             // what getSettings() reported — what we were GIVEN, not asked for
+let wakeLock=null;              // screen-wake lock, so a phone call survives the display timeout
+let micRecovering=false;        // a rebuild is already in flight — never start a second
 let vad='silence', uttPCM=[], preRoll=[], micMode='auto', pttHeld=false;
 let speechMs=0, silenceMs=0, bargeMs=0, uttMs=0, noiseFloor=0.004, specSent=false;
 let maxGapMs=0;                 // longest pause inside the current utterance — see LATCH_MS
@@ -968,6 +971,29 @@ function floatTo16kWav(chunks, srcRate){
   const dst=16000; let data=flat;
   if(srcRate>dst){ const ratio=srcRate/dst, len=Math.round(flat.length/ratio), out=new Float32Array(len);
     let oi=0,ii=0; while(oi<len){ const n=Math.round((oi+1)*ratio); let s=0,c=0; for(let i=ii;i<n&&i<flat.length;i++){s+=flat[i];c++;} out[oi]=c?s/c:0; oi++; ii=n; } data=out; }
+  else if(srcRate>0 && srcRate<dst){
+    // A mic BELOW 16k. Nothing on a laptop produces this; a phone does — Chrome on
+    // Android builds the AudioContext at the DEVICE rate, and a Bluetooth headset on
+    // the HFP/SCO profile is 8kHz. The rate is fixed when the context is created, so
+    // this fires when the headset was already paired at "Start call".
+    //
+    // This branch did not exist, and the header below writes `dst` unconditionally: an
+    // 8k recording was shipped labelled 16k, so Whisper read the caller at DOUBLE speed
+    // an octave high and returned nothing. The VAD was unaffected (the worklet resamples
+    // correctly in both directions), so turns opened and closed normally and simply
+    // transcribed to "" — which lands on the `commit_miss` path and asks the caller to
+    // repeat, into a microphone that will do exactly the same thing again.
+    //
+    // Linear interpolation rather than the box-average above: upsampling has no band to
+    // fold down, so there is nothing for an average to protect against, and interpolating
+    // is what the worklet's own resampler already does for this direction.
+    const ratio=srcRate/dst, len=Math.max(1,Math.floor(flat.length/ratio)), out=new Float32Array(len);
+    for(let i=0;i<len;i++){
+      const p=i*ratio, j=Math.floor(p), f=p-j;
+      out[i]= j+1<flat.length ? flat[j]*(1-f)+flat[j+1]*f : flat[flat.length-1];
+    }
+    data=out;
+  }
   const buf=new ArrayBuffer(44+data.length*2), v=new DataView(buf);
   const ws2=(o,s)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));};
   ws2(0,'RIFF');v.setUint32(4,36+data.length*2,true);ws2(8,'WAVE');ws2(12,'fmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
@@ -1000,15 +1026,150 @@ async function makeMicNode(){
   };
   return n;
 }
+/* ---------- staying alive on a phone -------------------------------------------
+ * A laptop call runs in a foreground tab on mains power and none of this is reachable.
+ * A phone takes the microphone away for reasons the page never hears about: the screen
+ * times out, the user glances at a notification, a real call arrives, a Bluetooth
+ * headset connects. Every one of those ends with a live `callActive`, an orb still
+ * saying LISTENING, and a microphone that will never deliver another frame — the call
+ * is over and nothing on screen says so.
+ *
+ * Three separate things have to be handled, because they fail independently:
+ *   the SCREEN     — a wake lock, so the display timeout does not start the cascade
+ *   the CONTEXT    — iOS suspends AudioContext on background and never resumes it
+ *   the TRACK      — the OS can end or mute the mic track out from under us
+ */
+async function keepAwake(){
+  try{ if('wakeLock' in navigator && !wakeLock)
+         wakeLock=await navigator.wakeLock.request('screen'); }
+  catch(_){}            // denied, unsupported, or not visible — the call still works
+}
+function releaseWake(){
+  try{ wakeLock&&wakeLock.release(); }catch(_){}
+  wakeLock=null;
+}
+// Rebuild the mic chain WITHOUT ending the call. The WebSocket, the session id and the
+// conversation all survive; only the audio graph is replaced. Used whenever the track
+// we were given stops being usable.
+async function restartMic(why){
+  if(!callActive || micRecovering) return;
+  micRecovering=true;
+  console.warn('[mic] recovering: '+why);
+  try{
+    try{ if(micNode&&micNode.port) micNode.port.onmessage=null;
+         micNode&&micNode.disconnect(); micSource&&micSource.disconnect();
+         micAnalyser&&micAnalyser.disconnect(); }catch(_){}
+    if(micStream) micStream.getTracks().forEach(t=>t.stop());
+    micStream=micSource=micNode=micAnalyser=null;
+    // Whatever was half-captured belongs to a microphone that no longer exists.
+    uttPCM=[]; preRoll=[]; frameQ=[]; uttMs=speechMs=silenceMs=0; vad='silence';
+    dropSpeculation();
+    try{ if(audioCtx.state==='suspended') await audioCtx.resume(); }catch(_){}
+    micStream=await navigator.mediaDevices.getUserMedia({audio:MIC_CONSTRAINTS});
+    logMicSettings();
+    watchMicTrack();
+    micSource=audioCtx.createMediaStreamSource(micStream);
+    micAnalyser=audioCtx.createAnalyser(); micAnalyser.fftSize=512; micAnalyser.smoothingTimeConstant=.6;
+    micAnalyser.minDecibels=-85; micAnalyser.maxDecibels=-10;
+    micSource.connect(micAnalyser);
+    micNode=await makeMicNode();
+    micSource.connect(micNode); micNode.connect(silentGain);
+    if(silero.ready) resetSilero();          // the LSTM state describes a dead stream
+    setState(agentPlaying?'speaking':(micMode==='auto'?'listening':'idle'));
+  }catch(e){
+    // We could not get a microphone back. SAY so — the alternative is an orb that
+    // reads LISTENING beside a mic that is gone, which is the failure this exists for.
+    console.warn('[mic] could not recover: '+e.message);
+    endCall();
+    statusText.textContent='microphone lost — tap Start call';
+  }finally{ micRecovering=false; }
+}
+// The OS can end the track (a real phone call takes the mic) or mute it (a route change
+// mid-call). `ended` is terminal and needs a new track; `mute` usually un-mutes itself
+// within a second or two, so give it a moment before tearing anything down.
+let _unmuteTimer=null;
+function watchMicTrack(){
+  const t=micStream&&micStream.getAudioTracks()[0];
+  if(!t) return;
+  t.onended=()=>restartMic('the OS ended the track');
+  t.onmute=()=>{
+    clearTimeout(_unmuteTimer);
+    _unmuteTimer=setTimeout(()=>{ if(callActive && t.muted) restartMic('the track stayed muted'); }, 1500);
+  };
+  t.onunmute=()=>clearTimeout(_unmuteTimer);
+}
+// Backgrounding. iOS suspends the AudioContext here and does not resume it on return,
+// and a wake lock is ALWAYS released when the page hides — so both have to be re-taken.
+document.addEventListener('visibilitychange', async()=>{
+  if(document.hidden) return;
+  if(!callActive) return;
+  try{ if(audioCtx && audioCtx.state==='suspended') await audioCtx.resume(); }catch(_){}
+  keepAwake();                                   // the lock did not survive being hidden
+  const t=micStream&&micStream.getAudioTracks()[0];
+  if(!t || t.readyState==='ended') restartMic('the mic did not survive backgrounding');
+});
+// A headset connecting or disconnecting mid-call. The track usually survives, but the
+// DEVICE behind it changed; if it did not survive, rebuild rather than go deaf.
+if(navigator.mediaDevices && navigator.mediaDevices.addEventListener){
+  navigator.mediaDevices.addEventListener('devicechange', ()=>{
+    if(!callActive) return;
+    const t=micStream&&micStream.getAudioTracks()[0];
+    if(!t || t.readyState==='ended') restartMic('the audio route changed');
+    else logMicSettings();                       // same track, possibly a new device
+  });
+}
+
+// What we ASK the OS for. `getSettings()` below reports what we were actually given —
+// a phone often refuses, and a constraint that was silently ignored is worse than one
+// that was never requested, because the measurements downstream assume it held.
+//
+// NOISE SUPPRESSION OFF, for the same reason `stt.auto_denoise` is off in config.yaml
+// and for the same evidence: denoising in front of the recogniser measurably HURTS it
+// (Whisper WER 0.00 -> 0.10, speaker similarity 0.675 -> 0.596, see zensuvidha/denoise.py).
+// It was on here, which meant the phone's own suppressor — far more aggressive than a
+// laptop's — was applying exactly the harm the pipeline was built to avoid, upstream of
+// everything, where it cannot be measured, A/B'd or switched off. It also thins a second
+// voice, which is the signal diarize.py clusters on.
+//
+// ECHO CANCELLATION STAYS ON. It is not in the same category: barge-in depends on it
+// (see the echo guard in handleFrame), and it removes OUR voice, never the caller's.
+const MIC_CONSTRAINTS = {channelCount:1,
+      echoCancellation:true,
+      noiseSuppression:false,
+      // AGC OFF: it continuously rescales the signal, so a level-based VAD is always
+      // chasing a floor that AGC just moved. Whisper normalises internally anyway.
+      autoGainControl:false};
+function logMicSettings(){
+  try{
+    const t=micStream&&micStream.getAudioTracks()[0];
+    const s=t&&t.getSettings?t.getSettings():null;
+    if(!s) return;
+    micActual=s;
+    console.log(`[mic] ${s.sampleRate||audioCtx.sampleRate}Hz · AEC=${s.echoCancellation} `
+      +`NS=${s.noiseSuppression} AGC=${s.autoGainControl} · ctx=${audioCtx.sampleRate}Hz`);
+    for(const [k,want] of Object.entries({echoCancellation:true,noiseSuppression:false,autoGainControl:false}))
+      if(k in s && s[k]!==want)
+        console.warn(`[mic] asked for ${k}=${want}, the OS gave ${s[k]} — it overrode us`);
+  }catch(_){}
+}
 async function startCall(){
   if(callActive) return;
   ensureCtx();
-  try{ micStream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,
-        echoCancellation:true, noiseSuppression:true,
-        // AGC OFF: it continuously rescales the signal, so a level-based VAD is always
-        // chasing a floor that AGC just moved. Whisper normalises internally anyway.
-        autoGainControl:false}}); }
-  catch(e){ alert('Microphone permission needed: '+e.message); return; }
+  // iOS suspends the context whenever the page is backgrounded and does NOT resume it
+  // on its own. `ensureCtx` asks, but the promise settles a tick later, and starting a
+  // call against a suspended context gives a mic node that never delivers a frame.
+  try{ if(audioCtx.state==='suspended') await audioCtx.resume(); }catch(_){}
+  try{ micStream=await navigator.mediaDevices.getUserMedia({audio:MIC_CONSTRAINTS}); }
+  catch(e){
+    // A phone can refuse the whole constraint set rather than relaxing it. Retry bare
+    // before giving up — a call on the OS's own terms beats no call at all.
+    try{ micStream=await navigator.mediaDevices.getUserMedia({audio:true});
+         console.warn('[mic] constraints refused ('+e.name+') — using the OS defaults'); }
+    catch(e2){ alert('Microphone permission needed: '+e2.message); return; }
+  }
+  logMicSettings();
+  watchMicTrack();
+  keepAwake();
   micSource=audioCtx.createMediaStreamSource(micStream);
   micAnalyser=audioCtx.createAnalyser(); micAnalyser.fftSize=512; micAnalyser.smoothingTimeConstant=.6;
   // The defaults are -100..-30dB, which a speaker at full volume beside the mic pins to
@@ -1040,6 +1201,13 @@ function setHint(){
 function endCall(){
   callActive=false; pttHeld=false; frameQ=[];
   dropSpeculation();
+  releaseWake();
+  clearTimeout(_unmuteTimer); _unmuteTimer=null;
+  // Drop the track handlers BEFORE stopping the tracks. `stop()` fires `ended`, and
+  // `restartMic` guards on `callActive` — which is already false here — but leaving a
+  // handler pointed at a stream we are tearing down is how a hang-up races a recovery.
+  try{ const t=micStream&&micStream.getAudioTracks()[0];
+       if(t){ t.onended=t.onmute=t.onunmute=null; } }catch(_){}
   try{ if(micNode&&micNode.port) micNode.port.onmessage=null;
        micNode&&micNode.disconnect(); micSource&&micSource.disconnect(); micAnalyser&&micAnalyser.disconnect(); }catch(_){}
   if(micStream) micStream.getTracks().forEach(t=>t.stop());
