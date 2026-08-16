@@ -45,8 +45,15 @@ SRC = open(INDEX, encoding="utf-8").read()
 
 
 def _extract(src: str, name: str) -> str:
-    """Return `function name(...){...}`, matched by counting braces."""
+    """Return `function name(...){...}`, matched by counting braces.
+
+    Keeps a leading `async`. Without it the extracted body still parses — right up until
+    it contains an `await`, at which point Node rejects it for a reason that has nothing
+    to do with the code under test.
+    """
     start = src.index("function %s(" % name)
+    if src[max(0, start - 6):start] == "async ":
+        start -= 6
     depth, i, opened = 0, start, False
     while i < len(src):
         c = src[i]
@@ -160,24 +167,52 @@ def test_a_below_16k_mic_is_upsampled_rather_than_passed_through():
 
 
 def test_an_empty_or_silent_capture_does_not_crash():
-    """The recovery paths below can hand this an empty buffer mid-rebuild."""
+    """The recovery paths below can hand this an empty buffer mid-rebuild.
+
+    And it must not produce NaN. The interpolator's tail reads flat[length-1], which on
+    an empty buffer is `undefined` — a Float32Array stores that as NaN, and the same
+    array is handed to the inspector to draw. A waveform of NaN renders as nothing,
+    which looks exactly like a turn that was correctly silent.
+    """
     out = _run("""
     const res = floatTo16kWav([new Float32Array(0)], 8000);
-    console.log(JSON.stringify({samples: res.data.length}));
+    console.log(JSON.stringify({samples: res.data.length,
+                                finite: Array.from(res.data).every(Number.isFinite)}));
     """)
     assert out["samples"] <= 1
+    assert out["finite"], "an empty capture must not resample into NaN"
 
 
 # ------------------------------------------------------------- losing the mic
 
-def test_noise_suppression_is_not_requested():
+def test_noise_suppression_is_not_requested_anywhere():
     """The OS suppressor is the harm zensuvidha/denoise.py measured, applied upstream
-    of every switch that exists to control it."""
-    assert "noiseSuppression:false" in SRC.replace(" ", ""), \
-        "requesting OS noise suppression contradicts denoise.py's own measurements"
+    of every switch that exists to control it.
+
+    Asserted as an ABSENCE across the whole file, not as the presence of one correct
+    line. The first version of this test checked that `noiseSuppression:false` appeared
+    somewhere and passed happily while the brand-voice recorder a thousand lines further
+    down still asked for `true` — on the one clip whose entire job is carrying speaker
+    identity, where suppression costs the most.
+    """
+    flat = SRC.replace(" ", "")
+    assert "noiseSuppression:true" not in flat, \
+        "some getUserMedia call still asks the OS to denoise"
+    assert "noiseSuppression:false" in flat
     # AEC is NOT in the same category — barge-in depends on it, and it removes OUR
     # voice, never the caller's. A blanket "turn the processing off" would break it.
-    assert "echoCancellation:true" in SRC.replace(" ", "")
+    assert "echoCancellation:true" in flat
+
+
+def test_every_capture_path_uses_the_same_constraints():
+    """A second constraint object is how the two drift. The call path and the clone
+    recorder must ask for the same processing, or the voiceprint the agent enrols
+    against and the reference it is cloned from were recorded through different front
+    ends."""
+    import re
+    # Every getUserMedia with an inline audio object, other than the bare-`true` retries.
+    inline = re.findall(r"getUserMedia\(\{audio:\s*\{", SRC.replace(" ", ""))
+    assert not inline, "capture paths must share MIC_CONSTRAINTS, not inline their own"
 
 
 def test_what_the_os_actually_gave_us_is_reported():
@@ -231,6 +266,182 @@ def test_recovery_cannot_run_twice_at_once():
     """`ended` and `visibilitychange` fire together when a call is answered mid-session;
     two concurrent rebuilds race for one AudioContext."""
     assert "micRecovering" in SRC
+
+
+def test_the_wake_lock_is_retaken_after_the_platform_releases_it():
+    """The one that makes the wake lock worth having.
+
+    The platform releases the lock whenever the page is hidden and leaves the sentinel
+    in place with `released === true`. Guarding on `!wakeLock` alone therefore holds a
+    DEAD lock forever: the first glance at a notification releases it, the re-acquire on
+    return sees a non-null sentinel and does nothing, and the screen times out on every
+    cycle after that — the exact cascade the lock exists to prevent.
+
+    Run for real rather than grepped, because the bug is one truthy check and reads as
+    correct.
+    """
+    prog = STUBS_WAKE + _extract(SRC, "keepAwake") + _extract(SRC, "releaseWake") + r"""
+    (async () => {
+      await keepAwake();
+      const first = wakeLock;
+      hide();                       // the platform drops it when the page is hidden
+      await keepAwake();            // ...and we come back to the foreground
+      console.log(JSON.stringify({
+        gotOneAtAll: first !== null,
+        heldAfterReturn: wakeLock !== null && wakeLock.released === false,
+        requests: navigator.wakeLock.requests,
+        differentSentinel: wakeLock !== first}));
+    })();
+    """
+    out = subprocess.run([NODE, "-e", prog], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    got = json.loads(out.stdout)
+    assert got["gotOneAtAll"]
+    assert got["heldAfterReturn"], "the lock was not re-taken after the platform released it"
+    assert got["requests"] == 2, "a released lock must be re-requested, not reused"
+    assert got["differentSentinel"]
+
+
+STUBS_WAKE = r"""
+let wakeLock = null;
+// A sentinel that behaves like the real one: hiding the page releases it in place.
+function makeSentinel(){
+  const listeners = [];
+  return { released:false,
+           addEventListener:(k,f)=>{ if(k==='release') listeners.push(f); },
+           release(){ this.released = true; listeners.forEach(f=>f()); },
+           _drop(){ this.released = true; } };
+}
+// Node 21+ ships its own read-only `navigator` global, so a plain assignment is
+// silently dropped and every assertion below would pass against an untested stub.
+Object.defineProperty(globalThis, 'navigator', {configurable:true, writable:true,
+  value: { wakeLock: { requests: 0,
+    async request(){ navigator.wakeLock.requests++; return makeSentinel(); } } }});
+// What the platform does on visibilitychange: releases the lock WITHOUT telling the
+// page, leaving the object non-null. No 'release' listener fires in this shape, which
+// is what makes the `!wakeLock` guard look sufficient.
+function hide(){ if (wakeLock) wakeLock._drop(); }
+"""
+
+
+def test_recovery_clears_the_latch_state_too():
+    """`maxGapMs` feeds the LATCH check — 7s of recording with no pause means "this is
+    not a person, it is continuous noise". Carrying it across a rebuild would discard
+    the caller's first sentence on the NEW microphone."""
+    fn = _extract(SRC, "restartMic")
+    for name in ("maxGapMs", "uttMs", "specSent", "commitTimer"):
+        assert name in fn, "restartMic must clear %s" % name
+
+
+def test_recovery_drops_the_speculation_before_it_clears_the_flag():
+    """Ordering, and it reads as correct either way.
+
+    `dropSpeculation()` returns early unless `specSent` is true, so resetting the
+    counters first turns it into a silent no-op — and that message is the only thing
+    that reaches `_void_speculation` on the server (zensuvidha/server.py, the `stt_hint`
+    handler). Without it a speculative reply keeps generating against words from a
+    microphone that no longer exists, and competes with the caller's next real turn.
+    """
+    fn = _extract(SRC, "restartMic")
+    assert fn.index("dropSpeculation()") < fn.index("specSent=false"), \
+        "dropSpeculation must run while specSent is still true"
+
+
+def test_recovery_cancels_the_pending_unmute_check():
+    """`stop()` does not clear a track's `muted`. A timer armed before the rebuild fires
+    ~1.5s later, sees the old dead track still muted, and tears down the healthy
+    microphone that was just rebuilt — discarding the utterance in progress."""
+    fn = _extract(SRC, "restartMic")
+    assert "_unmuteTimer" in fn
+
+
+def test_recovery_gives_up_if_the_caller_hung_up_while_it_waited():
+    """Getting a mic back on a phone takes hundreds of ms to seconds. If the caller taps
+    End call in that window, endCall runs against a micStream restartMic already nulled
+    — so it stops nothing — and everything after the await would build a LIVE graph on
+    an ended call: recording indicator lit, orb reading LISTENING, and the next
+    startCall overwrites micStream so the track is never stopped again."""
+    fn = _extract(SRC, "restartMic").replace(" ", "")
+    # The LAST getUserMedia in the function is the fallback retry; the guard must come
+    # after every one of them, not merely somewhere in the body.
+    after = fn[fn.rindex("getUserMedia"):]
+    assert "if(!callActive)" in after, \
+        "restartMic must re-check callActive after the await"
+    guard = after[after.index("if(!callActive)"):]
+    assert "stop()" in guard[:300], "and stop the track it just acquired"
+    assert "return" in guard[:300]
+
+
+def test_recovery_has_the_same_constraint_fallback_as_starting():
+    """A route change is exactly when a phone starts refusing the constraint set.
+    Failing the whole rebuild over it ends a call a bare request could have kept."""
+    fn = _extract(SRC, "restartMic")
+    assert "getUserMedia({audio:true})" in fn.replace(" ", "")
+
+
+def test_frames_in_flight_cannot_reach_a_rebuilt_utterance():
+    """`pump` is an async loop. Frames captured before the old node was disconnected can
+    still be sitting in it, and would be appended to a buffer restartMic just cleared —
+    half a sentence from a microphone that no longer exists, sent as a turn."""
+    fn = _extract(SRC, "handleFrame")
+    head = fn[:fn.index("micMode==='ptt'")]
+    assert "micRecovering" in head, \
+        "handleFrame must bail on a rebuild BEFORE it buffers anything"
+
+
+# ------------------------------------------------- getting onto the phone at all
+
+MOBILE_SH = os.path.join(ROOT, "scripts", "run_mobile.sh")
+OPENSSL = shutil.which("openssl")
+
+
+def test_the_mobile_cert_names_the_address_you_actually_open():
+    """Without this the phone path does not merely warn — it does not work.
+
+    iOS/macOS have required subjectAltName since iOS 13 and ignore the Common Name
+    entirely; Chrome has done the same since 58. The script issued
+    `-subj "/CN=zensuvidha.local"` with no SAN at all, and you open it by LAN IP, so the
+    certificate was wrong twice over. No secure context means `navigator.mediaDevices`
+    is undefined and the page fails before it can say why.
+    """
+    sh = open(MOBILE_SH, encoding="utf-8").read()
+    assert "subjectAltName" in sh
+    assert "IP:$IP" in sh, "the SAN must name the LAN IP, not a hostname nobody types"
+    # The IP has to be known BEFORE the certificate is issued for it. Compare the CODE,
+    # not the file — the header comment explains all of this above either line.
+    code = "\n".join(l for l in sh.split("\n") if not l.lstrip().startswith("#"))
+    assert code.index("ipconfig getifaddr") < code.index("subjectAltName=IP:"), \
+        "find the LAN IP before issuing a certificate that has to name it"
+
+
+def test_the_mobile_cert_is_reissued_when_the_address_changes():
+    """A laptop that moves between home and office Wi-Fi gets a new IP, and the cached
+    certificate still names the old one — which fails on the phone with an error that
+    says nothing about certificates."""
+    sh = open(MOBILE_SH, encoding="utf-8").read()
+    assert "-ext subjectAltName" in sh, "the cached cert must be checked against $IP"
+    assert "checkend" in sh, "...and against its own expiry"
+
+
+@pytest.mark.skipif(OPENSSL is None, reason="openssl is not installed")
+def test_the_openssl_invocation_really_produces_that_san(tmp_path):
+    """Run it, rather than trusting that the flags mean what they look like. `-addext`
+    is silently ignored by some builds, which is exactly the failure this guards."""
+    ip = "192.168.1.7"
+    key, crt = tmp_path / "k.pem", tmp_path / "c.pem"
+    r = subprocess.run([OPENSSL, "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                        "-keyout", str(key), "-out", str(crt), "-days", "365",
+                        "-subj", "/CN=%s" % ip,
+                        "-addext", "subjectAltName=IP:%s,IP:127.0.0.1,DNS:localhost" % ip,
+                        "-addext", "extendedKeyUsage=serverAuth"],
+                       capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr
+    san = subprocess.run([OPENSSL, "x509", "-in", str(crt), "-noout",
+                          "-ext", "subjectAltName"],
+                         capture_output=True, text=True, timeout=60).stdout
+    assert "IP Address:%s" % ip in san
+    # And the guard in the script must not accept a prefix-similar address.
+    assert "IP Address:192.168.1.70" not in san
 
 
 def test_hanging_up_disarms_the_watchers_before_stopping_the_tracks():

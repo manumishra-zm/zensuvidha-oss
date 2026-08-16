@@ -732,7 +732,6 @@ function stopAgentAudio(){
 
 // ---------- microphone + VAD (hands-free auto turn-taking) ----------
 let callActive=false, micStream=null, micSource=null, micNode=null, micAnalyser=null, workletReady=false;
-let micActual=null;             // what getSettings() reported — what we were GIVEN, not asked for
 let wakeLock=null;              // screen-wake lock, so a phone call survives the display timeout
 let micRecovering=false;        // a rebuild is already in flight — never start a second
 let vad='silence', uttPCM=[], preRoll=[], micMode='auto', pttHeld=false;
@@ -971,7 +970,7 @@ function floatTo16kWav(chunks, srcRate){
   const dst=16000; let data=flat;
   if(srcRate>dst){ const ratio=srcRate/dst, len=Math.round(flat.length/ratio), out=new Float32Array(len);
     let oi=0,ii=0; while(oi<len){ const n=Math.round((oi+1)*ratio); let s=0,c=0; for(let i=ii;i<n&&i<flat.length;i++){s+=flat[i];c++;} out[oi]=c?s/c:0; oi++; ii=n; } data=out; }
-  else if(srcRate>0 && srcRate<dst){
+  else if(srcRate>0 && srcRate<dst && flat.length){
     // A mic BELOW 16k. Nothing on a laptop produces this; a phone does — Chrome on
     // Android builds the AudioContext at the DEVICE rate, and a Bluetooth headset on
     // the HFP/SCO profile is 8kHz. The rate is fixed when the context is created, so
@@ -1040,12 +1039,21 @@ async function makeMicNode(){
  *   the TRACK      — the OS can end or mute the mic track out from under us
  */
 async function keepAwake(){
-  try{ if('wakeLock' in navigator && !wakeLock)
-         wakeLock=await navigator.wakeLock.request('screen'); }
-  catch(_){}            // denied, unsupported, or not visible — the call still works
+  // `wakeLock` is NOT a safe "do we hold one" flag on its own. The platform releases the
+  // lock whenever the page is hidden and leaves the sentinel object in place with
+  // `released === true` — so guarding on `!wakeLock` alone means the re-acquire below
+  // no-ops from the first time the user glances at a notification onward, and the screen
+  // times out on every cycle after that. Which is the cascade this exists to prevent.
+  try{
+    if(!('wakeLock' in navigator)) return;
+    if(wakeLock && !wakeLock.released) return;         // genuinely still held
+    wakeLock=await navigator.wakeLock.request('screen');
+    // Belt and braces: some engines fire this without setting `released` promptly.
+    wakeLock.addEventListener&&wakeLock.addEventListener('release',()=>{ wakeLock=null; });
+  }catch(_){ wakeLock=null; }   // denied, unsupported, or hidden — the call still works
 }
 function releaseWake(){
-  try{ wakeLock&&wakeLock.release(); }catch(_){}
+  try{ wakeLock&&!wakeLock.released&&wakeLock.release(); }catch(_){}
   wakeLock=null;
 }
 // Rebuild the mic chain WITHOUT ending the call. The WebSocket, the session id and the
@@ -1061,11 +1069,43 @@ async function restartMic(why){
          micAnalyser&&micAnalyser.disconnect(); }catch(_){}
     if(micStream) micStream.getTracks().forEach(t=>t.stop());
     micStream=micSource=micNode=micAnalyser=null;
-    // Whatever was half-captured belongs to a microphone that no longer exists.
-    uttPCM=[]; preRoll=[]; frameQ=[]; uttMs=speechMs=silenceMs=0; vad='silence';
+    // FIRST, while the state it reads is still intact. `dropSpeculation` returns early
+    // unless `specSent` is true, so clearing the counters below before calling it makes
+    // it a silent no-op — and that message is the only thing that reaches
+    // `_void_speculation` on the server. Without it a speculative reply keeps generating
+    // against words from a microphone that no longer exists, and competes with the
+    // caller's next real turn for the CPU.
     dropSpeculation();
+    // A pending un-mute check belongs to the track we just stopped. `stop()` does not
+    // clear `muted`, so that timer would fire ~1.5s from now, see a muted (dead) track
+    // and tear down the healthy microphone this call is about to rebuild.
+    clearTimeout(_unmuteTimer); _unmuteTimer=null;
+    // Whatever was half-captured belongs to a microphone that no longer exists. This has
+    // to clear EVERY per-utterance counter, not the obvious ones: `maxGapMs` survives
+    // into the LATCH check, so a turn that had not yet seen a pause would carry "this is
+    // continuous noise, not a person" across the rebuild and discard the caller's first
+    // sentence on the new microphone.
+    uttPCM=[]; preRoll=[]; frameQ=[]; uttMs=speechMs=silenceMs=bargeMs=maxGapMs=0;
+    vad='silence'; specSent=false; specWords=false; specUttMs=0; specTries=0; specAt=0;
+    pendingPCM=null; clearTimeout(commitTimer); commitTimer=null;
     try{ if(audioCtx.state==='suspended') await audioCtx.resume(); }catch(_){}
-    micStream=await navigator.mediaDevices.getUserMedia({audio:MIC_CONSTRAINTS});
+    // Same fallback ladder as startCall. A route change is exactly when a phone starts
+    // refusing the constraint set, and failing the whole rebuild over it would end a
+    // call that a bare request could have kept.
+    try{ micStream=await navigator.mediaDevices.getUserMedia({audio:MIC_CONSTRAINTS}); }
+    catch(e){ micStream=await navigator.mediaDevices.getUserMedia({audio:true});
+              console.warn('[mic] constraints refused on rebuild ('+e.name+') — OS defaults'); }
+    // Getting a microphone back on a phone takes hundreds of milliseconds to seconds —
+    // a route has to settle, sometimes a permission re-prompt. The caller can hang up in
+    // that window, and `endCall` ran against a micStream this function had already nulled,
+    // so it stopped nothing. Everything below would then build a LIVE audio graph on an
+    // ended call: the recording indicator stays lit, the orb reads LISTENING, and the
+    // next startCall overwrites micStream so this track is never stopped again.
+    if(!callActive){
+      micStream.getTracks().forEach(t=>t.stop());
+      micStream=null;
+      return;
+    }
     logMicSettings();
     watchMicTrack();
     micSource=audioCtx.createMediaStreamSource(micStream);
@@ -1144,7 +1184,6 @@ function logMicSettings(){
     const t=micStream&&micStream.getAudioTracks()[0];
     const s=t&&t.getSettings?t.getSettings():null;
     if(!s) return;
-    micActual=s;
     console.log(`[mic] ${s.sampleRate||audioCtx.sampleRate}Hz · AEC=${s.echoCancellation} `
       +`NS=${s.noiseSuppression} AGC=${s.autoGainControl} · ctx=${audioCtx.sampleRate}Hz`);
     for(const [k,want] of Object.entries({echoCancellation:true,noiseSuppression:false,autoGainControl:false}))
@@ -1222,6 +1261,11 @@ function bargeIn(){                                  // stop the agent so the ca
 }
 async function handleFrame(f, backlogged){
   if(!callActive) return;
+  // A rebuild is in flight. `pump` is an async loop, so frames captured before the old
+  // node was disconnected can still be sitting in it and would be appended to an
+  // utterance buffer that restartMic has already cleared — half a sentence from a
+  // microphone that no longer exists, endpointed and sent as a turn.
+  if(micRecovering) return;
 
   // ---- push-to-talk: capture only while Space is held ----
   if(micMode==='ptt'){
@@ -1489,7 +1533,14 @@ function sendPending(){
   // The server could not use the guess. Send what the caller actually said.
   clearTimeout(commitTimer); commitTimer=null;
   const pcm=pendingPCM; pendingPCM=null;
-  if(!pcm || !(ws&&ws.readyState===1)) return;
+  if(!pcm || !(ws&&ws.readyState===1)){
+    // The server asked for a recording we no longer have — the mic was rebuilt under us,
+    // or the socket went away between the commit and the answer. Returning silently
+    // leaves the page on "thinking" with nothing coming, which is the same dead-air
+    // failure `commit_miss` was added to close. Give the turn back to the caller.
+    if(state==='thinking') setState(callActive?'listening':'idle');
+    return;
+  }
   setState('thinking');
   // It IS being analysed after all — clear the note the shortcut left on it, or the
   // page would keep claiming this recording was never looked at.
@@ -2660,7 +2711,12 @@ const recVoice=document.getElementById('recVoice'), bvHint=document.getElementBy
 let recStop=null, recActive=false;
 async function recordClip(maxSec){
   ensureCtx();
-  const stream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true}});
+  // The SAME constraints as a call, and for a stronger reason than on the call path.
+  // This clip's entire purpose is to carry the owner's voice into a cloned one, and
+  // suppression is measured to remove exactly what identity lives in — speaker
+  // similarity 0.675 -> 0.596 (zensuvidha/denoise.py). Requesting it here degraded the
+  // reference before the server ever saw it, and the server then processes it again.
+  const stream=await navigator.mediaDevices.getUserMedia({audio:MIC_CONSTRAINTS});
   const src=audioCtx.createMediaStreamSource(stream); const proc=audioCtx.createScriptProcessor(4096,1,1);
   const parts=[]; let stopped=false;
   proc.onaudioprocess=e=>{ if(!stopped) parts.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
